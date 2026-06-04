@@ -205,6 +205,9 @@ margin_diff_str = ""
 if prev_kpi:
     diff = 영업이익률_v7 - prev_kpi.get("영업이익률_v7", prev_kpi["영업이익률"])
     margin_diff_str = f"전월비 {diff:+.1f}%p"
+dep_월 = kpi.get("감가상각_월", 0)
+if dep_월 > 0:
+    pl_rows.append({"항목": "감가상각비 (월배분)", "금액": f"−{fmt_억(dep_월)}", "매출대비": pct_str(dep_월)})
 pl_rows.append({"항목": "── 영업이익 ──", "금액": fmt_억(영업이익_v7), "매출대비": pct_str(영업이익_v7) + (f"  ({margin_diff_str})" if margin_diff_str else "")})
 if 영업외수익_반복 > 0:
     pl_rows.append({"항목": "영업외수익 (이자수익)", "금액": f"+{fmt_억(영업외수익_반복)}", "매출대비": pct_str(영업외수익_반복)})
@@ -212,7 +215,7 @@ if 영업외수익_일회성 > 0:
     pl_rows.append({"항목": "영업외수익 (일회성)", "금액": f"+{fmt_억(영업외수익_일회성)}", "매출대비": pct_str(영업외수익_일회성)})
 pl_rows.append({"항목": "이자비용", "금액": f"−{fmt_억(이자비용)}", "매출대비": pct_str(이자비용)})
 if 자산처분손실 > 0:
-    pl_rows.append({"항목": "일회성손익 (감가상각·처분)", "금액": f"−{fmt_억(자산처분손실)}", "매출대비": pct_str(자산처분손실)})
+    pl_rows.append({"항목": "일회성손익 (처분)", "금액": f"−{fmt_억(자산처분손실)}", "매출대비": pct_str(자산처분손실)})
 pl_rows.append({"항목": "── 실질이익 ──", "금액": fmt_억(실질이익), "매출대비": pct_str(실질이익)})
 
 st.dataframe(pd.DataFrame(pl_rows), use_container_width=True, hide_index=True, height=315)
