@@ -6,7 +6,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from core.db import load_journal, get_available_months, get_annual_dep
-from core.metrics import calc_kpi, cost_bucket, _apply_cost_bucket, fmt_krw, apply_monthly_depreciation
+from core.metrics import calc_kpi, _apply_cost_bucket, fmt_krw, apply_monthly_depreciation
 
 st.set_page_config(page_title="원가·비용 통제", page_icon="💰", layout="wide")
 
@@ -28,9 +28,21 @@ if not months:
     st.warning("데이터가 없습니다. 데이터 허브에서 분개장을 업로드해 주세요.")
     st.stop()
 
-col_sel1, col_tog = st.columns([2, 2])
-selected_ym = col_sel1.selectbox("분석 월", months, index=0)
+all_years = sorted(set(m[:4] for m in months), reverse=True)
+
+# ── 월/연 선택 ────────────────────────────────────────────────────────────────
+col_period, col_sel, col_tog = st.columns([1, 2, 2])
+period_mode = col_period.radio("기간", ["월별", "연간"], horizontal=True)
 display_mode = col_tog.radio("표시 방식", ["절대금액", "매출 대비 비율 (%)"], horizontal=True)
+
+if period_mode == "월별":
+    selected_ym = col_sel.selectbox("분석 월", months, index=0)
+    selected_year = selected_ym[:4]
+    title_label = f"{selected_ym[:4]}년 {selected_ym[5:7]}월"
+else:
+    selected_year = col_sel.selectbox("분석 연도", all_years, index=0)
+    selected_ym = None
+    title_label = f"{selected_year}년 연간"
 
 
 @st.cache_data(ttl=300)
@@ -42,21 +54,45 @@ def load_data(ym):
     return df, calc_kpi(df)
 
 
+@st.cache_data(ttl=600)
+def load_data_year(year: str, month_list: list[str]):
+    year_months = [m for m in month_list if m.startswith(year)]
+    frames = []
+    for ym in year_months:
+        df = load_journal(ym)
+        if not df.empty:
+            if "계정그룹" not in df.columns:
+                df["계정그룹"] = df["계정코드"].astype(str).str[:1]
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame(), {}
+    combined = pd.concat(frames, ignore_index=True)
+    return combined, calc_kpi(combined)
+
+
 @st.cache_data(ttl=3600)
 def get_dep(year: str) -> float:
     return get_annual_dep(year)
 
 
-df, kpi = load_data(selected_ym)
+# 데이터 로드
+if period_mode == "월별":
+    df, kpi = load_data(selected_ym)
+else:
+    with st.spinner(f"{selected_year}년 전체 데이터 집계 중..."):
+        df, kpi = load_data_year(selected_year, months)
+
 if df.empty:
-    st.error("해당 월 데이터 없음")
+    st.error("데이터 없음")
     st.stop()
 
-# 감가상각 ÷12 자동 적용
-annual_dep = get_dep(selected_ym[:4])
-monthly_dep = annual_dep / 12
+st.caption(f"분석 기간: **{title_label}** | 분개행: {len(df):,}개")
+
+# 감가상각 적용 (월별 ÷12, 연간은 연간 총액)
+annual_dep = get_dep(selected_year)
+dep_amount = (annual_dep / 12) if period_mode == "월별" else annual_dep
 if annual_dep > 0:
-    kpi = apply_monthly_depreciation(kpi, monthly_dep)
+    kpi = apply_monthly_depreciation(kpi, dep_amount)
 
 매출액 = kpi["매출액"]
 
@@ -134,7 +170,10 @@ else:
     k4.metric("영업이익률", "N/A")
 
 if annual_dep > 0:
-    st.caption(f"📊 감가상각 {fmt_krw(monthly_dep)}/월 균등 배분 반영 (연간 {fmt_krw(annual_dep)})")
+    if period_mode == "월별":
+        st.caption(f"📊 감가상각 {fmt_krw(dep_amount)}/월 균등 배분 반영 (연간 {fmt_krw(annual_dep)})")
+    else:
+        st.caption(f"📊 감가상각 연간 {fmt_krw(annual_dep)} 반영")
 
 # ── 메인 차트 ──────────────────────────────────────────────────────────────
 st.markdown("---")
