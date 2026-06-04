@@ -209,3 +209,82 @@ def load_debts() -> pd.DataFrame:
     if not res.data:
         return pd.DataFrame()
     return pd.DataFrame(res.data)
+
+
+# ── tax_journal (세무사 분개장 — 감가상각 전용) ──────────────────────────────
+
+TAX_JOURNAL_COLUMNS = [
+    "year", "전표일자", "전표번호", "계정코드", "계정과목",
+    "차변", "대변", "거래처", "적요",
+]
+
+TAX_JOURNAL_SQL = """
+-- Supabase SQL Editor에서 실행
+CREATE TABLE IF NOT EXISTS tax_journal (
+    id          bigserial PRIMARY KEY,
+    year        text NOT NULL,
+    전표일자    text,
+    전표번호    text,
+    계정코드    text,
+    계정과목    text,
+    차변        numeric DEFAULT 0,
+    대변        numeric DEFAULT 0,
+    거래처      text,
+    적요        text
+);
+CREATE INDEX IF NOT EXISTS idx_tax_journal_year ON tax_journal(year);
+CREATE INDEX IF NOT EXISTS idx_tax_journal_code ON tax_journal(계정코드);
+"""
+
+
+def upsert_tax_journal(df: pd.DataFrame, year: str) -> int:
+    """세무사 분개장을 tax_journal 테이블에 저장 (연도 단위 덮어쓰기)."""
+    client = get_client()
+    try:
+        client.table("tax_journal").delete().eq("year", year).execute()
+        send_cols = [c for c in TAX_JOURNAL_COLUMNS if c in df.columns]
+        records = df[send_cols].to_dict(orient="records")
+        batch = 500
+        for i in range(0, len(records), batch):
+            client.table("tax_journal").insert(records[i:i+batch]).execute()
+        return len(records)
+    except Exception as e:
+        raise RuntimeError(f"tax_journal 저장 실패: {e}")
+
+
+def load_tax_depreciation() -> pd.DataFrame:
+    """tax_journal에서 감가상각 계정(518·818·840) 전체 이력 조회."""
+    client = get_client()
+    try:
+        res = (client.table("tax_journal")
+               .select("year,전표일자,계정코드,계정과목,차변")
+               .in_("계정코드", ["518", "818", "840"])
+               .execute())
+        if not res.data:
+            return pd.DataFrame()
+        df = pd.DataFrame(res.data)
+        df["차변"] = pd.to_numeric(df["차변"], errors="coerce").fillna(0)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_tax_depreciation_annual(year: str) -> float:
+    """특정 연도 세무사 분개장 기준 연간 감가상각 총액."""
+    dep_df = load_tax_depreciation()
+    if dep_df.empty:
+        return 0.0
+    year_data = dep_df[dep_df["year"].astype(str) == str(year)]
+    return float(year_data["차변"].sum())
+
+
+def get_tax_years() -> list[str]:
+    """tax_journal에 업로드된 연도 목록 반환."""
+    client = get_client()
+    try:
+        res = client.table("tax_journal").select("year").execute()
+        if not res.data:
+            return []
+        return sorted(set(r["year"] for r in res.data), reverse=True)
+    except Exception:
+        return []

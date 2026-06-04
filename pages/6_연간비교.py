@@ -121,9 +121,9 @@ def get_val(kpi: dict, label: str, key) -> float:
     }
     if label in mapping:
         return bucket.get(mapping[label], 0)
-    # 기타비용: 전체 운영비에서 이미 열거된 항목 제외
+    # 기타비용: 전체 운영비에서 이미 열거된 항목 제외 (일회성손익 제외)
     if label == "기타비용":
-        known = set(mapping.values()) | {"인건비"}
+        known = set(mapping.values()) | {"인건비", "일회성손익"}
         return sum(v for k, v in bucket.items() if k not in known)
     return 0
 
