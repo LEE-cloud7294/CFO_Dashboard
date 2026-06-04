@@ -133,8 +133,9 @@ if 원재료순 > 0:
 if 부재료매입 > 0:
     extra_rows.append({"대분류": "부재료매입", "금액": 부재료매입})
 # 감가상각 월별 배분 추가
-if monthly_dep > 0:
-    extra_rows.append({"대분류": "감가상각(월배분)", "금액": monthly_dep})
+if dep_amount > 0:
+    dep_label = "감가상각(월배분)" if period_mode == "월별" else "감가상각(연간)"
+    extra_rows.append({"대분류": dep_label, "금액": dep_amount})
 
 if extra_rows:
     bucket_base = pd.concat([bucket_base, pd.DataFrame(extra_rows)], ignore_index=True)
