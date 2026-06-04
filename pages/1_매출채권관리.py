@@ -7,7 +7,9 @@ from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from core.db import load_journal_upto, get_available_months, load_master_blacklist
-from core.aging import calc_aging, calc_ar_summary, calc_concentration, calc_overdue_ratio
+from core.aging import (calc_aging, calc_ar_summary, calc_concentration,
+                        calc_overdue_ratio, extract_ar_collections)
+from core.metrics import fmt_krw
 
 st.set_page_config(page_title="매출채권 관리", page_icon="📋", layout="wide")
 
@@ -22,7 +24,7 @@ if not st.session_state.get("authenticated"):
     st.stop()
 
 st.title("📋 매출채권 · 여신 집중 관리")
-st.caption("외상매출금(108) — 창업일부터 선택월 말일까지 누적 잔액 FIFO 연령분석")
+st.caption("외상매출금(108) — 창업일부터 선택월 말일까지 전체 누적 이력 기준 FIFO 연령분석")
 
 months = get_available_months()
 if not months:
@@ -37,23 +39,22 @@ year, month = int(selected_ym[:4]), int(selected_ym[5:7])
 last_day = calendar.monthrange(year, month)[1]
 as_of = date(year, month, last_day)
 
-@st.cache_data(ttl=300)
+
+@st.cache_data(ttl=3600)
 def load_cumulative(ym: str):
-    # 최근 24개월만 로드 — 2년 이상 된 미수금은 실무상 별도 처리
+    """창업일~선택월 말일 전체 누적 로드 — 날짜 제한 없음 (FIFO 정확도 우선)."""
     df = load_journal_upto(ym)
-    if not df.empty:
-        if "계정그룹" not in df.columns:
-            df["계정그룹"] = df["계정코드"].astype(str).str[:1]
-        cutoff_year = int(ym[:4]) - 2
-        cutoff = f"{cutoff_year}-{ym[5:7]}-01"
-        df = df[df["전표일자"] >= cutoff]
+    if not df.empty and "계정그룹" not in df.columns:
+        df["계정그룹"] = df["계정코드"].astype(str).str[:1]
     return df
+
 
 @st.cache_data(ttl=3600)
 def get_blacklist():
     return load_master_blacklist()
 
-with st.spinner(f"{selected_ym} 말일 기준 누적 데이터 불러오는 중..."):
+
+with st.spinner(f"{selected_ym} 말일 기준 전체 누적 데이터 불러오는 중 (최초 로딩 시 시간 소요)..."):
     df = load_cumulative(selected_ym)
 
 if df.empty:
@@ -85,17 +86,13 @@ with st.expander("🔍 외상매출금(108) 원시 데이터 진단"):
         st.warning("⚠️ 108(외상매출금) 계정 데이터가 없습니다.")
     else:
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("108 계정 총 행수", f"{len(ar_raw):,}개")
-        c2.metric("발생 합계", f"{ar_raw['차변'].sum()/1e8:.2f}억원")
-        c3.metric("회수 합계", f"{ar_raw['대변'].sum()/1e8:.2f}억원")
-        c4.metric("순잔액", f"{(ar_raw['차변'].sum()-ar_raw['대변'].sum())/1e8:.2f}억원")
-
-        blank_cr = ar_raw[(ar_raw["대변"] > 0) & (ar_raw["거래처"].astype(str).str.strip() == "")]
+        c1.metric("108 총 행수", f"{len(ar_raw):,}개")
+        c2.metric("발생 합계", fmt_krw(ar_raw['차변'].sum()))
+        c3.metric("회수 합계", fmt_krw(ar_raw['대변'].sum()))
+        c4.metric("순잔액", fmt_krw(ar_raw['차변'].sum()-ar_raw['대변'].sum()))
+        blank_cr = ar_raw[(ar_raw["대변"]>0) & (ar_raw["거래처"].astype(str).str.strip()=="")]
         if len(blank_cr) > 0:
-            st.warning(
-                f"⚠️ 회수 행 중 거래처 공란: **{len(blank_cr)}개** "
-                f"({blank_cr['대변'].sum()/1e6:.1f}백만원) — 전표번호로 자동 보완 적용"
-            )
+            st.warning(f"⚠️ 회수 행 중 거래처 공란: {len(blank_cr)}개 → 전표번호로 자동 보완 적용")
 
 # ── 집중도 경보 ──────────────────────────────────────────────────────────
 st.markdown("---")
@@ -103,7 +100,7 @@ st.subheader("⚠️ 거래처 집중도 경보")
 
 col_c1, col_c2, col_c3 = st.columns(3)
 col_c1.metric("총 거래처 수", f"{conc['총거래처수']}개")
-col_c2.metric("총 외상매출금 잔액", f"{conc['총잔액']/1e8:.2f}억원")
+col_c2.metric("총 외상매출금 잔액", fmt_krw(conc['총잔액']))
 
 집중도 = conc["상위5집중도"]
 if 집중도 >= 60:
@@ -116,7 +113,7 @@ else:
 if conc["상위5"]:
     top5_raw = pd.DataFrame(conc["상위5"])
     top5_raw["비중(%)"] = (top5_raw["잔액"] / conc["총잔액"] * 100).round(1)
-    top5_raw["잔액"] = top5_raw["잔액"].apply(lambda v: f"{v/1e6:.1f}백만원")
+    top5_raw["잔액"] = top5_raw["잔액"].apply(fmt_krw)
     st.dataframe(top5_raw, use_container_width=True, hide_index=True)
 
 # ── 연령분석 도넛 ────────────────────────────────────────────────────────
@@ -150,38 +147,62 @@ with col_ratio:
     st.subheader("구간별 금액")
     icons = {"정상(0-30)": "🟢", "주의(31-60)": "🟡", "경고(61-90)": "🟠", "악성(91+)": "🔴"}
     for label, amount in aging_summary.items():
-        st.markdown(f"{icons[label]} **{label}**: {amount/1e6:.1f}백만원")
+        st.markdown(f"{icons[label]} **{label}**: {fmt_krw(amount)}")
 
-# ── 거래처별 회수율 · DSO ────────────────────────────────────────────────
+# ── 거래처별 회수율 · DSO · 회수수단 ────────────────────────────────────
 st.markdown("---")
-st.subheader("📊 거래처별 회수율 · 평균회수일(DSO)")
+st.subheader("📊 거래처별 회수율 · 평균회수일(DSO) · 회수수단")
 
+# 회수수단 분석 (현금/어음수취/대손상각)
 if not summary_df.empty:
+    coll_df = extract_ar_collections(df)
+
+    # 거래처별 회수수단 집계
+    수단_pivot = pd.DataFrame()
+    if not coll_df.empty:
+        coll_grp = coll_df.groupby(["거래처", "수단"])["회수액"].sum().unstack(fill_value=0).reset_index()
+        수단_pivot = coll_grp
+
     def recovery_badge(row):
         r = row["회수율(%)"]
         if r >= 95: return "🟢 양호"
         if r >= 80: return "🟡 주의"
         return "🔴 위험"
 
-    # DSO 높은 순(회수 느린 거래처가 위로)으로 정렬
+    # DSO 내림차순 (회수 느린 순)
     display_summary = summary_df.sort_values("DSO(일)", ascending=False, na_position="last").copy()
     display_summary["위험도"] = display_summary.apply(recovery_badge, axis=1)
-    display_summary["발생액"] = display_summary["발생액"].apply(lambda v: f"{v/1e6:.1f}백만")
-    display_summary["회수액"] = display_summary["회수액"].apply(lambda v: f"{v/1e6:.1f}백만")
-    display_summary["잔액"] = display_summary["잔액"].apply(lambda v: f"{v/1e6:.1f}백만")
+    display_summary["발생액"] = display_summary["발생액"].apply(fmt_krw)
+    display_summary["회수액"] = display_summary["회수액"].apply(fmt_krw)
+    display_summary["잔액"] = display_summary["잔액"].apply(fmt_krw)
     display_summary["회수율(%)"] = display_summary["회수율(%)"].apply(lambda v: f"{v:.1f}%")
     display_summary["DSO(일)"] = display_summary["DSO(일)"].apply(
         lambda v: f"{v}일" if pd.notna(v) else "—"
     )
+
+    # 어음수취 비중 추가
+    if not 수단_pivot.empty and "어음수취" in 수단_pivot.columns:
+        어음_map = 수단_pivot.set_index("거래처")["어음수취"].to_dict()
+        display_summary["어음수취"] = display_summary["거래처"].map(
+            lambda g: fmt_krw(어음_map.get(g, 0)) if 어음_map.get(g, 0) > 0 else "—"
+        )
+        show_cols = ["거래처", "발생액", "회수액", "잔액", "회수율(%)", "DSO(일)", "어음수취", "위험도"]
+    else:
+        show_cols = ["거래처", "발생액", "회수액", "잔액", "회수율(%)", "DSO(일)", "위험도"]
+
     st.dataframe(
-        display_summary[["거래처", "발생액", "회수액", "잔액", "회수율(%)", "DSO(일)", "위험도"]],
-        use_container_width=True, hide_index=True, height=350,
+        display_summary[show_cols],
+        use_container_width=True, hide_index=True, height=380,
     )
-    st.caption("DSO = 발생일~회수일 FIFO 가중평균. 누적 데이터 기준이며 단일 월 선택 시 의미가 제한적.")
+    st.caption(
+        "DSO = 발생일~현금회수일 FIFO 가중평균 | "
+        "어음수취 = 현금화 전 받을어음 (미수취급 주의) | "
+        "회수율·잔액은 창업일부터 선택월까지 전체 누적 기준"
+    )
 else:
     st.info("회수율 데이터 없음")
 
-# ── 악성 미수금 액션 리스트 ─────────────────────────────────────────────
+# ── 악성 미수금 ─────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("🚨 악성 미수금 거래처 (91일+ 즉시 연락)")
 
@@ -190,10 +211,14 @@ if 악성_df.empty:
     st.success("91일 초과 미수금 없음")
 else:
     display = 악성_df[["거래처", "잔액", "악성(91+)"]].copy()
-    display["잔액"] = display["잔액"].apply(lambda v: f"{v/1e6:.1f}백만원")
-    display["악성(91+)"] = display["악성(91+)"].apply(lambda v: f"{v/1e6:.1f}백만원")
+    display["잔액"] = display["잔액"].apply(fmt_krw)
+    display["악성(91+)"] = display["악성(91+)"].apply(fmt_krw)
     display.columns = ["거래처", "전체 잔액", "91일+ 미수금"]
     st.dataframe(display, use_container_width=True, hide_index=True)
+    st.warning(
+        "💡 **대손상각 처리 방법**: 위하고에서 `차변: 대손상각비 / 대변: 외상매출금(108)` 분개 입력 후 "
+        "데이터허브에서 해당 월 재업로드하면 자동 반영됩니다."
+    )
 
 # ── 전체 연령분석표 ────────────────────────────────────────────────────
 st.markdown("---")
@@ -206,7 +231,7 @@ if search:
 
 display_aging = filtered.copy()
 for col in ["잔액", "정상(0-30)", "주의(31-60)", "경고(61-90)", "악성(91+)"]:
-    display_aging[col] = display_aging[col].apply(lambda v: f"{v/1e6:.1f}백만")
+    display_aging[col] = display_aging[col].apply(fmt_krw)
 
 st.dataframe(display_aging, use_container_width=True, hide_index=True, height=400)
 
@@ -223,9 +248,8 @@ if 집중도 >= 50 and conc["상위5"]:
     actions.append(f"⚠️ **{top1}** 집중도 {집중도:.1f}% — 거래처 다변화 검토")
 주의금액 = aging_df["주의(31-60)"].sum()
 if 주의금액 > 5e7:
-    actions.append(f"📞 주의 구간(31~60일) {주의금액/1e6:.0f}백만원 — 연체 전환 방지 연락")
+    actions.append(f"📞 주의 구간(31~60일) {fmt_krw(주의금액)} — 연체 전환 방지 연락")
 
-# 회수율 낮은 거래처 경보
 if not summary_df.empty:
     위험업체 = summary_df[summary_df["회수율(%)"] < 80]
     if not 위험업체.empty:

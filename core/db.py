@@ -116,24 +116,16 @@ def load_all_journal() -> pd.DataFrame:
     return df
 
 
-def load_journal_upto(ym: str, months_back: int = 30) -> pd.DataFrame:
-    """선택월 말일까지 최근 N개월 누적 분개 데이터 로드 (AR aging용).
+def load_journal_upto(ym: str) -> pd.DataFrame:
+    """선택월 말일까지 전체 누적 분개 데이터 로드 (AR aging용).
 
-    months_back: 몇 개월 전부터 로드할지 (기본 30개월 = 2.5년).
-    2년 이상 된 미수금은 실무상 별도 처리 대상이므로 전체 이력 불필요.
+    매출채권 FIFO 정확도를 위해 창업일부터 전체 이력 조회.
+    날짜 제한 없음 — 수년 전 발생한 미수금도 정확히 추적.
     """
     import calendar
     year, month = int(ym[:4]), int(ym[5:7])
     last_day = calendar.monthrange(year, month)[1]
     end_date = f"{ym}-{last_day:02d}"
-
-    # 시작일: months_back 개월 전
-    from_month = month - (months_back % 12)
-    from_year = year - (months_back // 12)
-    if from_month <= 0:
-        from_month += 12
-        from_year -= 1
-    from_date = f"{from_year}-{from_month:02d}-01"
 
     client = get_client()
     all_data = []
@@ -142,7 +134,6 @@ def load_journal_upto(ym: str, months_back: int = 30) -> pd.DataFrame:
     while True:
         res = (client.table("journal")
                .select("*")
-               .gte("전표일자", from_date)
                .lte("전표일자", end_date)
                .order("전표일자")
                .range(offset, offset + page_size - 1)
