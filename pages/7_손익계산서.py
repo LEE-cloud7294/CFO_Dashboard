@@ -143,26 +143,34 @@ if not cur_kpi:
 # ── 회계기준 감가상각 적용 ──────────────────────────────────────────────────
 annual_dep = 0.0
 monthly_dep = 0.0
+dep_display = 0.0   # 표시할 감가상각 금액 (현금기준=0, 회계기준=배분액)
+use_dep_line = False  # 손익표에 감가상각 별도 라인 표시 여부
+
 if use_accounting:
     annual_dep = get_tax_depreciation_annual(selected_year)
     monthly_dep = annual_dep / 12
-    if mode == "월별":
-        dep_amount = monthly_dep
-    else:
-        dep_amount = annual_dep
+    dep_display = monthly_dep if mode == "월별" else annual_dep
 
     if annual_dep > 0:
-        # 영업이익에서 감가상각 차감
         cur_kpi = dict(cur_kpi)
-        cur_kpi["영업이익_v7"] = cur_kpi.get("영업이익_v7", 0) - dep_amount
+        # 회계기준: tax_journal ÷12를 영업이익 안으로 포함
+        # 직원 분개장의 연말 일괄 감가상각(자산처분손실)은 제거 → 이중계산 방지
+        cur_kpi["영업이익_v7"] = cur_kpi.get("영업이익_v7", 0) - dep_display
         cur_kpi["영업이익률_v7"] = (
             cur_kpi["영업이익_v7"] / cur_kpi.get("매출액", 1) * 100
             if cur_kpi.get("매출액", 0) > 0 else 0
         )
-        cur_kpi["실질이익"] = cur_kpi["영업이익_v7"] + cur_kpi.get("영업외수익", 0) - cur_kpi.get("이자비용", 0) - cur_kpi.get("자산처분손실", 0)
+        cur_kpi["자산처분손실"] = 0  # 직원 분개장 연말 덩어리 제거 (회계기준으로 대체)
+        cur_kpi["실질이익"] = (
+            cur_kpi["영업이익_v7"]
+            + cur_kpi.get("영업외수익", 0)
+            - cur_kpi.get("이자비용", 0)
+        )
+        use_dep_line = True
         st.info(
-            f"📊 회계기준 적용 중 — {selected_year}년 연간 감가상각 {annual_dep/1e8:.3f}억원 "
-            f"(월별 {monthly_dep/1e6:.1f}백만원 균등 배분)"
+            f"📊 회계기준 — {selected_year}년 연간 감가상각 {annual_dep/1e8:.3f}억원 "
+            f"÷ 12 = 월 {monthly_dep/1e6:.1f}백만원 균등 배분 적용 "
+            f"(직원 분개장 연말 일괄 감가상각은 제외)"
         )
     else:
         st.warning("세무사 분개장에서 감가상각 데이터를 찾을 수 없습니다.")
@@ -305,6 +313,7 @@ html = f"""
     <td class='right'>{pct(기타비, 매출)}</td>
     <td class='right'>—</td>
   </tr>
+  {"" if not use_dep_line else f"<tr><td>&nbsp;&nbsp;감가상각비 <span style='font-size:11px;color:#60a5fa;'>(÷12 균등배분)</span></td><td class='right'>−{fmt_억(dep_display)}</td><td class='right'>{pct(dep_display, 매출)}</td><td class='right'>—</td></tr>"}
   <tr class='subtotal-row'>
     <td class='{profit_cls}'>영업이익</td>
     <td class='right {profit_cls}'>{fmt_억(영업이익, sign=True)}</td>
@@ -319,7 +328,7 @@ html = f"""
     <td class='right'>{pct(이자비용, 매출)}</td>
     <td class='right'>—</td>
   </tr>
-  {"" if 자산처분손실 == 0 else f"<tr><td>&nbsp;&nbsp;일회성손익 <span style='font-size:11px;color:#6b7280;'>(감가상각·처분)</span></td><td class='right'>−{fmt_억(자산처분손실)}</td><td class='right'>{pct(자산처분손실, 매출)}</td><td class='right'>—</td></tr>"}
+  {"" if 자산처분손실 == 0 else f"<tr><td>&nbsp;&nbsp;감가상각(연말일괄) <span style='font-size:11px;color:#6b7280;'>(현금기준)</span></td><td class='right'>−{fmt_억(자산처분손실)}</td><td class='right'>{pct(자산처분손실, 매출)}</td><td class='right'>—</td></tr>"}
   <tr class='total-row'>
     <td class='{real_cls}'>실질이익</td>
     <td class='right {real_cls}'>{fmt_억(실질이익, sign=True)}</td>
