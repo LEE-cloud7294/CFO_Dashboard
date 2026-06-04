@@ -159,6 +159,8 @@ st.markdown("---")
 영업이익 = cur_kpi.get("영업이익_v7", 0)
 이자비용 = cur_kpi.get("이자비용", 0)
 자산처분손실 = cur_kpi.get("자산처분손실", 0)
+영업외수익_반복 = cur_kpi.get("영업외수익_반복", 0)
+영업외수익_일회성 = cur_kpi.get("영업외수익_일회성", 0)
 실질이익 = cur_kpi.get("실질이익", 0)
 buckets = cur_kpi.get("비용대분류_v7", {})
 
@@ -265,18 +267,15 @@ html = f"""
     <td class='right {profit_cls}'>{pct(영업이익, 매출)}</td>
     <td class='right'>{margin_diff(cur_kpi, prev_kpi) if prev_kpi else "—"}</td>
   </tr>
+  {"" if 영업외수익_반복 == 0 else f"<tr><td>&nbsp;&nbsp;이자수익</td><td class='right'>+{fmt_억(영업외수익_반복)}</td><td class='right'>{pct(영업외수익_반복, 매출)}</td><td class='right'>—</td></tr>"}
+  {"" if 영업외수익_일회성 == 0 else f"<tr><td>&nbsp;&nbsp;영업외수익 <span style='font-size:11px;color:#6b7280;'>(일회성)</span></td><td class='right'>+{fmt_억(영업외수익_일회성)}</td><td class='right'>{pct(영업외수익_일회성, 매출)}</td><td class='right'>—</td></tr>"}
   <tr>
     <td>&nbsp;&nbsp;이자비용</td>
     <td class='right'>−{fmt_억(이자비용)}</td>
     <td class='right'>{pct(이자비용, 매출)}</td>
     <td class='right'>—</td>
   </tr>
-  {"" if 자산처분손실 == 0 else f"""  <tr>
-    <td>&nbsp;&nbsp;자산처분손실 <span style='font-size:11px;color:#6b7280;'>(일회성)</span></td>
-    <td class='right'>−{fmt_억(자산처분손실)}</td>
-    <td class='right'>{pct(자산처분손실, 매출)}</td>
-    <td class='right'>—</td>
-  </tr>"""}
+  {"" if 자산처분손실 == 0 else f"<tr><td>&nbsp;&nbsp;일회성손익 <span style='font-size:11px;color:#6b7280;'>(감가상각·처분)</span></td><td class='right'>−{fmt_억(자산처분손실)}</td><td class='right'>{pct(자산처분손실, 매출)}</td><td class='right'>—</td></tr>"}
   <tr class='total-row'>
     <td class='{real_cls}'>실질이익</td>
     <td class='right {real_cls}'>{fmt_억(실질이익, sign=True)}</td>

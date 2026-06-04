@@ -59,6 +59,38 @@ def load_journal(ym: str) -> pd.DataFrame:
     return df
 
 
+def load_journal_code(code: str) -> pd.DataFrame:
+    """특정 계정코드 전체 이력 로드 — load_all_journal 대신 사용 (속도 개선).
+
+    Code 931(이자비용) 등 특정 계정만 필요할 때 전체 분개 대신 이 함수를 사용.
+    """
+    client = get_client()
+    all_data = []
+    page_size = 1000
+    offset = 0
+    while True:
+        res = (client.table("journal")
+               .select("ym,전표일자,차변,대변,거래처,적요")
+               .eq("계정코드", code)
+               .order("전표일자")
+               .range(offset, offset + page_size - 1)
+               .execute())
+        if not res.data:
+            break
+        all_data.extend(res.data)
+        if len(res.data) < page_size:
+            break
+        offset += page_size
+    if not all_data:
+        return pd.DataFrame()
+    df = pd.DataFrame(all_data)
+    df["전표일자"] = pd.to_datetime(df["전표일자"])
+    for col in ["차변", "대변"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    return df
+
+
 def load_all_journal() -> pd.DataFrame:
     """전체 분개 데이터 로드 (페이지네이션)."""
     client = get_client()
