@@ -265,3 +265,160 @@ def calc_overdue_ratio(aging_df: pd.DataFrame) -> dict:
         "경고비중": round(aging_df["경고(61-90)"].sum() / total * 100, 1),
         "악성비중": round(aging_df["악성(91+)"].sum() / total * 100, 1),
     }
+
+
+def calc_payment_pattern(df: pd.DataFrame) -> pd.DataFrame:
+    """거래처별 실제 결제 기간 분포 분석 — 여신 관리 핵심 지표.
+
+    FIFO 매칭으로 각 발생 건이 실제로 얼마 만에 회수됐는지 추적.
+    → 거래처가 '2달 여신'이라고 했는데 실제로는 몇 달인지 데이터로 확인.
+
+    반환 컬럼:
+        거래처, 발생액, 회수액, 잔액, 회수율(%),
+        평균결제일, 최소결제일, 최대결제일,
+        30일이내(%), 31-60일(%), 61-90일(%), 91일이상(%),
+        권장여신(일)   ← 실 데이터 기반 자동 산출
+    """
+    df = _fill_ar_partner(df)
+    ar_df = df[df["계정코드"].astype(str).str.startswith("108")].copy()
+    ar_df["전표일자"] = pd.to_datetime(ar_df["전표일자"], errors="coerce")
+    ar_df = ar_df.dropna(subset=["전표일자"])
+
+    if ar_df.empty:
+        return pd.DataFrame()
+
+    result = []
+
+    for partner, grp in ar_df.groupby("거래처"):
+        debits  = grp[grp["차변"] > 0][["전표일자", "차변"]].sort_values("전표일자")
+        credits = grp[grp["대변"] > 0][["전표일자", "대변"]].sort_values("전표일자")
+
+        if debits.empty:
+            continue
+
+        발생액 = debits["차변"].sum()
+        회수액 = credits["대변"].sum()
+
+        # FIFO 매칭 → 각 발생 건의 회수 소요일
+        open_items = [[row["전표일자"], row["차변"]] for _, row in debits.iterrows()]
+        matched = []  # (days, amount)
+
+        for _, crow in credits.iterrows():
+            remaining = crow["대변"]
+            for item in open_items:
+                if remaining <= 0:
+                    break
+                applied = min(item[1], remaining)
+                if applied > 0:
+                    days = (crow["전표일자"] - item[0]).days
+                    if days >= 0:
+                        matched.append((days, applied))
+                    item[1] -= applied
+                    remaining -= applied
+
+        if not matched:
+            continue
+
+        total_matched = sum(a for _, a in matched)
+        all_days = [d for d, _ in matched]
+
+        # 가중평균 결제일 (금액 가중)
+        avg_days = sum(d * a for d, a in matched) / total_matched
+
+        # 중간값 (금액 기준 50번째 백분위)
+        sorted_matched = sorted(matched, key=lambda x: x[0])
+        cumsum = 0
+        median_days = sorted_matched[-1][0]
+        for d, a in sorted_matched:
+            cumsum += a
+            if cumsum >= total_matched * 0.5:
+                median_days = d
+                break
+
+        # 구간별 비중
+        b30  = sum(a for d, a in matched if d <= 30)  / total_matched * 100
+        b60  = sum(a for d, a in matched if 31 <= d <= 60)  / total_matched * 100
+        b90  = sum(a for d, a in matched if 61 <= d <= 90)  / total_matched * 100
+        b91p = sum(a for d, a in matched if d > 90)  / total_matched * 100
+
+        # 권장 여신기간: 95번째 백분위 기준 (대부분의 거래를 커버하는 기간)
+        sorted_days = sorted(matched, key=lambda x: x[0])
+        cum = 0
+        p95_days = sorted_days[-1][0]
+        for d, a in sorted_days:
+            cum += a
+            if cum >= total_matched * 0.95:
+                p95_days = d
+                break
+        # 30일 단위로 올림
+        recommended = ((p95_days // 30) + (1 if p95_days % 30 > 0 else 0)) * 30
+
+        result.append({
+            "거래처":        partner,
+            "발생액":        round(발생액),
+            "회수액":        round(회수액),
+            "잔액":          round(max(발생액 - 회수액, 0)),
+            "회수율(%)":     round(min(회수액, 발생액) / 발생액 * 100, 1) if 발생액 > 0 else 0,
+            "평균결제일":    round(avg_days),
+            "중간결제일":    median_days,
+            "최소결제일":    min(all_days),
+            "최대결제일":    max(all_days),
+            "30일이내(%)":   round(b30, 1),
+            "31-60일(%)":    round(b60, 1),
+            "61-90일(%)":    round(b90, 1),
+            "91일이상(%)":   round(b91p, 1),
+            "권장여신(일)":  recommended,
+        })
+
+    if not result:
+        return pd.DataFrame()
+
+    return (
+        pd.DataFrame(result)
+        .sort_values("발생액", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def calc_bills_receivable(df: pd.DataFrame) -> dict:
+    """110(받을어음) 잔액 분석 — 어음수취 후 미현금화 리스크.
+
+    반환:
+        total_outstanding: 전체 미현금화 어음 잔액
+        by_partner: 거래처별 어음수취액 (108 대변 + 전표에 110 차변 존재)
+    """
+    ar_df = df[df["계정코드"].astype(str).str.startswith("108")].copy()
+    bill_df = df[df["계정코드"].astype(str).str.startswith("110")].copy()
+
+    # 110 총 잔액 (미현금화 어음)
+    total_110 = bill_df["차변"].sum() - bill_df["대변"].sum()
+
+    # 거래처별 어음수취액: 108 대변과 같은 전표에 110 차변이 있는 것
+    ar_df = _fill_ar_partner(ar_df)
+    partner_bills = {}
+
+    for vno, grp in df.groupby("전표번호"):
+        ar_creds = grp[grp["계정코드"].astype(str).str.startswith("108") & (grp["대변"] > 0)]
+        bill_in  = grp[grp["계정코드"].astype(str).str.startswith("110") & (grp["차변"] > 0)]
+
+        if ar_creds.empty or bill_in.empty:
+            continue
+
+        for _, row in ar_creds.iterrows():
+            partner = str(row.get("거래처", "")).strip()
+            amt = row["대변"]
+            if partner:
+                partner_bills[partner] = partner_bills.get(partner, 0) + amt
+
+    by_partner = (
+        pd.DataFrame([
+            {"거래처": p, "어음수취액": round(v)}
+            for p, v in sorted(partner_bills.items(), key=lambda x: -x[1])
+        ])
+        if partner_bills else pd.DataFrame(columns=["거래처", "어음수취액"])
+    )
+
+    return {
+        "미현금화잔액": round(total_110),
+        "거래처별": by_partner,
+    }

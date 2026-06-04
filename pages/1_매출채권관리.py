@@ -8,7 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from core.db import load_journal_upto, get_available_months, load_master_blacklist
 from core.aging import (calc_aging, calc_ar_summary, calc_concentration,
-                        calc_overdue_ratio, extract_ar_collections)
+                        calc_overdue_ratio, extract_ar_collections,
+                        calc_payment_pattern, calc_bills_receivable)
 from core.metrics import fmt_krw
 
 st.set_page_config(page_title="매출채권 관리", page_icon="📋", layout="wide")
@@ -201,6 +202,115 @@ if not summary_df.empty:
     )
 else:
     st.info("회수율 데이터 없음")
+
+# ── 거래처별 실제 결제 기간 분석 (여신 관리) ─────────────────────────────
+st.markdown("---")
+st.subheader("📐 거래처별 실제 결제 기간 분석")
+st.caption("FIFO 매칭으로 각 발생 건이 실제로 회수까지 얼마나 걸렸는지 추적 | '2달 여신'이 실제로 지켜지는지 확인")
+
+with st.spinner("결제 패턴 분석 중..."):
+    pattern_df = calc_payment_pattern(df)
+
+if not pattern_df.empty:
+    # 블랙리스트 필터
+    if hide_blacklist:
+        bl_set = set(get_blacklist())
+        pattern_df = pattern_df[~pattern_df["거래처"].isin(bl_set)]
+
+    # 요약 테이블
+    display_pat = pattern_df.copy()
+    display_pat["발생액"] = display_pat["발생액"].apply(fmt_krw)
+    display_pat["잔액"] = display_pat["잔액"].apply(fmt_krw)
+    display_pat["회수율(%)"] = display_pat["회수율(%)"].apply(lambda v: f"{v:.1f}%")
+    display_pat["평균결제일"] = display_pat["평균결제일"].apply(lambda v: f"{v}일")
+    display_pat["권장여신(일)"] = display_pat["권장여신(일)"].apply(lambda v: f"{v}일")
+
+    # 결제 기간 분포 막대 (가로)
+    st.markdown("**거래처별 결제기간 분포 (금액 기준 가중평균)**")
+
+    fig_pat = go.Figure()
+    colors = {"30일이내(%)": "#4ade80", "31-60일(%)": "#fbbf24",
+              "61-90일(%)": "#fb923c", "91일이상(%)": "#f87171"}
+    for col, color in colors.items():
+        fig_pat.add_trace(go.Bar(
+            name=col.replace("(%)", ""),
+            x=pattern_df[col],
+            y=pattern_df["거래처"],
+            orientation="h",
+            marker_color=color,
+            text=pattern_df[col].apply(lambda v: f"{v:.0f}%" if v >= 5 else ""),
+            textposition="inside",
+            textfont_size=10,
+        ))
+    fig_pat.update_layout(
+        barmode="stack",
+        height=max(280, len(pattern_df) * 35),
+        margin=dict(t=10, b=10, l=10, r=60),
+        xaxis=dict(title="비중 (%)", range=[0, 100]),
+        yaxis=dict(autorange="reversed"),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="white"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    st.plotly_chart(fig_pat, use_container_width=True)
+
+    # 상세 테이블
+    with st.expander("📋 거래처별 결제기간 상세 테이블"):
+        show_cols = ["거래처", "발생액", "잔액", "회수율(%)",
+                     "평균결제일", "최소결제일", "최대결제일",
+                     "30일이내(%)", "31-60일(%)", "61-90일(%)", "91일이상(%)",
+                     "권장여신(일)"]
+        st.dataframe(display_pat[show_cols], use_container_width=True, hide_index=True)
+
+    # 여신 초과 경보
+    st.markdown("**⚠️ 권장 여신기간 vs 현황**")
+    for _, row in pattern_df.iterrows():
+        avg = row["평균결제일"]
+        rec = row["권장여신(일)"]
+        pct_over = row["91일이상(%)"]
+
+        if pct_over >= 20:
+            icon = "🔴"
+            msg = f"91일 초과 비중 {pct_over:.0f}% — 여신 조건 재협의 필요"
+        elif avg > 60:
+            icon = "🟡"
+            msg = f"평균 {avg}일 결제 — 여신 기준 재확인 필요"
+        else:
+            icon = "🟢"
+            msg = f"평균 {avg}일 정상"
+
+        st.markdown(
+            f"{icon} **{row['거래처']}** — 평균 {avg}일, 권장여신 {rec}일 | {msg}"
+        )
+else:
+    st.info("결제 패턴 데이터가 없습니다.")
+
+# ── 110 받을어음 잔액 모니터링 ────────────────────────────────────────────
+st.markdown("---")
+st.subheader("📄 받을어음(110) 미현금화 현황")
+st.caption("어음 수취 후 아직 보통예금으로 입금되지 않은 금액 — 부도 시 실질 손실")
+
+bills_info = calc_bills_receivable(df)
+total_bills = bills_info["미현금화잔액"]
+bills_by_partner = bills_info["거래처별"]
+
+col_b1, col_b2 = st.columns(2)
+col_b1.metric("전체 미현금화 어음 잔액", fmt_krw(total_bills),
+              delta="부도 위험 노출 금액" if total_bills > 0 else "없음",
+              delta_color="inverse" if total_bills > 0 else "off")
+
+if not bills_by_partner.empty:
+    with col_b2:
+        st.markdown("**거래처별 어음수취액 (미현금화 포함)**")
+        bills_display = bills_by_partner.copy()
+        bills_display["어음수취액"] = bills_display["어음수취액"].apply(fmt_krw)
+        st.dataframe(bills_display, use_container_width=True, hide_index=True)
+    st.caption(
+        f"💡 전체 어음 잔액 {fmt_krw(total_bills)} — "
+        "어음이 현금화되면 보통예금(103) 입금, 부도 시 대손처리 필요"
+    )
+else:
+    col_b2.info("어음 거래 없음")
 
 # ── 악성 미수금 ─────────────────────────────────────────────────────────
 st.markdown("---")
