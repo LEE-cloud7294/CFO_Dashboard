@@ -106,6 +106,16 @@ bucket_base = (
     .reset_index()
     .rename(columns={"차변": "금액"})
 )
+# "일회성손익" → "감가상각(연말)" 으로 표시명 변경
+bucket_base["대분류"] = bucket_base["대분류"].replace("일회성손익", "감가상각(연말)")
+
+# 감가상각 연말 집중 안내
+감가상각_금액 = bucket_base[bucket_base["대분류"] == "감가상각(연말)"]["금액"].sum()
+if 감가상각_금액 > 0:
+    st.info(
+        f"ℹ️ 이 달에 연간 감가상각비 {감가상각_금액/1e8:.2f}억원이 일괄 계상됩니다. "
+        "세무사 분개장 업로드 후 월별 균등 배분(÷12) 기능이 활성화됩니다."
+    )
 if extra_rows:
     bucket_base = pd.concat([bucket_base, pd.DataFrame(extra_rows)], ignore_index=True)
 
