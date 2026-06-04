@@ -184,19 +184,24 @@ st.markdown("---")
 실질이익 = cur_kpi.get("실질이익", 0)
 buckets = cur_kpi.get("비용대분류_v7", {})
 
+퇴직급여 = buckets.get("퇴직급여", 0)
+사대보험 = buckets.get("4대보험", 0)
+복리후생 = buckets.get("복리후생", 0)
 전력수도 = buckets.get("전력·수도", 0)
 물류차량 = buckets.get("물류·차량", 0)
 유지소모 = buckets.get("유지·소모품", 0)
 수수료 = buckets.get("수수료", 0)
-세금임차 = buckets.get("세금·임차", 0)
+임차료 = buckets.get("임차료", 0)
+세금공과 = buckets.get("세금·공과", buckets.get("세금·임차", 0))  # 구버킷 호환
 보험료 = buckets.get("보험료", 0)
 안전관리 = buckets.get("안전관리비", 0)
-하드웨어 = buckets.get("하드웨어", 0)   # 소모공구비(소모공구·부품 매입)
+환경비 = buckets.get("환경", 0)
+하드웨어 = buckets.get("하드웨어", 0)
 대손상각 = buckets.get("대손상각", 0)
 판관비 = buckets.get("판관비경비", 0)
 연구개발 = buckets.get("연구개발", 0)
 기타bucket = buckets.get("기타", 0)
-기타비 = 기타bucket + 안전관리 + 하드웨어 + 대손상각 + 판관비 + 연구개발
+기타비 = 기타bucket + 환경비 + 하드웨어 + 대손상각 + 판관비 + 연구개발
 
 prev_매출 = prev_kpi.get("매출액", 0) if prev_kpi else 0
 
@@ -237,11 +242,14 @@ html = f"""
     <td class='right'>{diff_pct(부재료매입, prev_kpi.get("부재료매입",0)) if prev_kpi else "—"}</td>
   </tr>
   <tr>
-    <td>&nbsp;&nbsp;인건비</td>
+    <td>&nbsp;&nbsp;인건비 <span style='font-size:11px;color:#9ca3af;'>(실급여)</span></td>
     <td class='right'>−{fmt_억(인건비)}</td>
     <td class='right'>{pct(인건비, 매출)}</td>
     <td class='right'>{diff_pct(인건비, prev_kpi.get("인건비",0)) if prev_kpi else "—"}</td>
   </tr>
+  {"" if 퇴직급여==0 else f"<tr><td>&nbsp;&nbsp;퇴직급여</td><td class='right'>−{fmt_억(퇴직급여)}</td><td class='right'>{pct(퇴직급여,매출)}</td><td class='right'>—</td></tr>"}
+  {"" if 사대보험==0 else f"<tr><td>&nbsp;&nbsp;4대보험</td><td class='right'>−{fmt_억(사대보험)}</td><td class='right'>{pct(사대보험,매출)}</td><td class='right'>—</td></tr>"}
+  {"" if 복리후생==0 else f"<tr><td>&nbsp;&nbsp;복리후생비</td><td class='right'>−{fmt_억(복리후생)}</td><td class='right'>{pct(복리후생,매출)}</td><td class='right'>—</td></tr>"}
   <tr>
     <td>&nbsp;&nbsp;전력·수도</td>
     <td class='right'>−{fmt_억(전력수도)}</td>
@@ -260,33 +268,30 @@ html = f"""
     <td class='right'>{pct(유지소모, 매출)}</td>
     <td class='right'>—</td>
   </tr>
+  {"" if 임차료==0 else f"<tr><td>&nbsp;&nbsp;임차료</td><td class='right'>−{fmt_억(임차료)}</td><td class='right'>{pct(임차료,매출)}</td><td class='right'>—</td></tr>"}
   <tr>
     <td>&nbsp;&nbsp;수수료</td>
     <td class='right'>−{fmt_억(수수료)}</td>
     <td class='right'>{pct(수수료, 매출)}</td>
     <td class='right'>—</td>
   </tr>
-  <tr>
-    <td>&nbsp;&nbsp;세금·임차</td>
-    <td class='right'>−{fmt_억(세금임차)}</td>
-    <td class='right'>{pct(세금임차, 매출)}</td>
-    <td class='right'>—</td>
-  </tr>
+  {"" if 세금공과==0 else f"<tr><td>&nbsp;&nbsp;세금·공과</td><td class='right'>−{fmt_억(세금공과)}</td><td class='right'>{pct(세금공과,매출)}</td><td class='right'>—</td></tr>"}
   <tr>
     <td>&nbsp;&nbsp;보험료</td>
     <td class='right'>−{fmt_억(보험료)}</td>
     <td class='right'>{pct(보험료, 매출)}</td>
     <td class='right'>—</td>
   </tr>
+  {"" if 안전관리==0 else f"<tr><td>&nbsp;&nbsp;안전관리비</td><td class='right'>−{fmt_억(안전관리)}</td><td class='right'>{pct(안전관리,매출)}</td><td class='right'>—</td></tr>"}
+  {"" if 환경비==0 else f"<tr><td>&nbsp;&nbsp;환경</td><td class='right'>−{fmt_억(환경비)}</td><td class='right'>{pct(환경비,매출)}</td><td class='right'>—</td></tr>"}
   <tr>
     <td>&nbsp;&nbsp;기타비용</td>
     <td class='right'>−{fmt_억(기타비)}</td>
     <td class='right'>{pct(기타비, 매출)}</td>
     <td class='right'>—</td>
   </tr>
-  {"" if 하드웨어 == 0 else f"<tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<span style='font-size:11px;color:#9ca3af;'>└ 소모공구비</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>−{fmt_억(하드웨어)}</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>{pct(하드웨어, 매출)}</span></td><td></td></tr>"}
-  {"" if 안전관리 == 0 else f"<tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<span style='font-size:11px;color:#9ca3af;'>└ 안전관리비</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>−{fmt_억(안전관리)}</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>{pct(안전관리, 매출)}</span></td><td></td></tr>"}
-  {"" if 판관비 == 0 else f"<tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<span style='font-size:11px;color:#9ca3af;'>└ 판관비경비</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>−{fmt_억(판관비)}</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>{pct(판관비, 매출)}</span></td><td></td></tr>"}
+  {"" if 하드웨어==0 else f"<tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<span style='font-size:11px;color:#9ca3af;'>└ 소모공구비</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>−{fmt_억(하드웨어)}</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>{pct(하드웨어,매출)}</span></td><td></td></tr>"}
+  {"" if 판관비==0 else f"<tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<span style='font-size:11px;color:#9ca3af;'>└ 판관비경비</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>−{fmt_억(판관비)}</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>{pct(판관비,매출)}</span></td><td></td></tr>"}
   {"" if not use_dep_line else f"<tr><td>&nbsp;&nbsp;감가상각비 <span style='font-size:11px;color:#60a5fa;'>(÷12 균등배분)</span></td><td class='right'>−{fmt_억(dep_display)}</td><td class='right'>{pct(dep_display, 매출)}</td><td class='right'>—</td></tr>"}
   <tr class='subtotal-row'>
     <td class='{profit_cls}'>영업이익</td>
