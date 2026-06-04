@@ -3,6 +3,28 @@ from typing import Optional
 import calendar
 
 
+def apply_monthly_depreciation(kpi: dict, monthly_dep: float) -> dict:
+    """kpi dict에 월별 감가상각 적용 (항상 ÷12 균등 배분).
+
+    - 연말 일괄 감가상각(자산처분손실)을 제거하고 monthly_dep으로 대체
+    - 이중계산 방지
+    """
+    if monthly_dep <= 0:
+        return kpi
+    kpi = dict(kpi)
+    kpi["영업이익_v7"] = kpi.get("영업이익_v7", 0) - monthly_dep
+    매출 = kpi.get("매출액", 0)
+    kpi["영업이익률_v7"] = round(kpi["영업이익_v7"] / 매출 * 100, 2) if 매출 > 0 else 0
+    kpi["자산처분손실"] = 0  # 직원분개장 연말 덩어리 제거 (월별 배분으로 대체)
+    kpi["감가상각_월"] = monthly_dep
+    kpi["실질이익"] = (
+        kpi["영업이익_v7"]
+        + kpi.get("영업외수익", 0)
+        - kpi.get("이자비용", 0)
+    )
+    return kpi
+
+
 def cost_bucket(code, name, note: str = "") -> Optional[str]:
     """비용 계정을 대분류로 분류 (CLAUDE.md §7 완전 구현).
 

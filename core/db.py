@@ -278,6 +278,29 @@ def get_tax_depreciation_annual(year: str) -> float:
     return float(year_data["차변"].sum())
 
 
+def get_annual_dep(year: str) -> float:
+    """연간 감가상각 총액 자동 추출.
+
+    우선순위:
+    1. tax_journal (세무사 분개장 업로드 시 — 2022~2024 소급 가능)
+    2. 직원 분개장 12월 Code 518/818/840 차변 (2025년부터 자동 인식)
+    """
+    # 1. tax_journal 우선
+    dep = get_tax_depreciation_annual(year)
+    if dep > 0:
+        return dep
+    # 2. 직원 분개장 12월에서 자동 추출
+    try:
+        df = load_journal(f"{year}-12")
+        if df.empty:
+            return 0.0
+        codes = ["518", "818", "840"]
+        dep_rows = df[df["계정코드"].astype(str).isin(codes)]
+        return float(dep_rows["차변"].sum())
+    except Exception:
+        return 0.0
+
+
 def get_tax_years() -> list[str]:
     """tax_journal에 업로드된 연도 목록 반환."""
     client = get_client()

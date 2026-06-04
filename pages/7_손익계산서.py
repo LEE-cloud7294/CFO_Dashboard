@@ -3,8 +3,8 @@ import pandas as pd
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from core.db import load_journal, get_available_months, get_tax_depreciation_annual, get_tax_years
-from core.metrics import calc_kpi
+from core.db import load_journal, get_available_months, get_annual_dep
+from core.metrics import calc_kpi, apply_monthly_depreciation
 
 st.set_page_config(page_title="손익계산서", page_icon="📄", layout="wide")
 
@@ -60,7 +60,7 @@ if not months:
     st.warning("데이터가 없습니다.")
     st.stop()
 
-col_mode, col_sel, col_basis, col_print = st.columns([1, 2, 1, 1])
+col_mode, col_sel, col_print = st.columns([1, 2, 1])
 
 mode = col_mode.radio("기간", ["월별", "연간"], horizontal=True)
 all_years = sorted(set(m[:4] for m in months))
@@ -71,23 +71,6 @@ if mode == "월별":
 else:
     selected_year = col_sel.selectbox("기준 연도", all_years[::-1], index=0)
     selected_ym = None
-
-# 현금/회계기준 토글
-tax_years = get_tax_years()
-acct_available = selected_year in tax_years
-basis_options = ["현금기준"]
-if acct_available:
-    basis_options.append("회계기준 (감가상각 포함)")
-basis = col_basis.radio(
-    "기준",
-    basis_options,
-    horizontal=False,
-    help="회계기준은 세무사 분개장 업로드 후 활성화됩니다.",
-)
-use_accounting = basis == "회계기준 (감가상각 포함)"
-
-if not acct_available and len(basis_options) == 1:
-    col_basis.caption("회계기준: 세무사 분개장 업로드 후 활성화")
 
 col_print.markdown("<br>", unsafe_allow_html=True)
 if col_print.button("🖨️ 인쇄 / PDF 저장", use_container_width=True):
@@ -140,40 +123,25 @@ if not cur_kpi:
     st.error("선택한 기간의 데이터가 없습니다.")
     st.stop()
 
-# ── 회계기준 감가상각 적용 ──────────────────────────────────────────────────
-annual_dep = 0.0
-monthly_dep = 0.0
-dep_display = 0.0   # 표시할 감가상각 금액 (현금기준=0, 회계기준=배분액)
-use_dep_line = False  # 손익표에 감가상각 별도 라인 표시 여부
+# ── 감가상각 ÷12 자동 적용 ──────────────────────────────────────────────────
+# 우선순위: tax_journal(세무사) > 직원분개장 12월 자동추출
+# 토글 없이 항상 균등 배분 → 매달 동일한 감가상각비 표시
+@st.cache_data(ttl=3600)
+def cached_annual_dep(year: str) -> float:
+    return get_annual_dep(year)
 
-if use_accounting:
-    annual_dep = get_tax_depreciation_annual(selected_year)
-    monthly_dep = annual_dep / 12
-    dep_display = monthly_dep if mode == "월별" else annual_dep
+annual_dep = cached_annual_dep(selected_year)
+monthly_dep = annual_dep / 12
+dep_display = monthly_dep if mode == "월별" else annual_dep
+use_dep_line = dep_display > 0
 
-    if annual_dep > 0:
-        cur_kpi = dict(cur_kpi)
-        # 회계기준: tax_journal ÷12를 영업이익 안으로 포함
-        # 직원 분개장의 연말 일괄 감가상각(자산처분손실)은 제거 → 이중계산 방지
-        cur_kpi["영업이익_v7"] = cur_kpi.get("영업이익_v7", 0) - dep_display
-        cur_kpi["영업이익률_v7"] = (
-            cur_kpi["영업이익_v7"] / cur_kpi.get("매출액", 1) * 100
-            if cur_kpi.get("매출액", 0) > 0 else 0
-        )
-        cur_kpi["자산처분손실"] = 0  # 직원 분개장 연말 덩어리 제거 (회계기준으로 대체)
-        cur_kpi["실질이익"] = (
-            cur_kpi["영업이익_v7"]
-            + cur_kpi.get("영업외수익", 0)
-            - cur_kpi.get("이자비용", 0)
-        )
-        use_dep_line = True
-        st.info(
-            f"📊 회계기준 — {selected_year}년 연간 감가상각 {annual_dep/1e8:.3f}억원 "
-            f"÷ 12 = 월 {monthly_dep/1e6:.1f}백만원 균등 배분 적용 "
-            f"(직원 분개장 연말 일괄 감가상각은 제외)"
-        )
-    else:
-        st.warning("세무사 분개장에서 감가상각 데이터를 찾을 수 없습니다.")
+if use_dep_line:
+    cur_kpi = apply_monthly_depreciation(cur_kpi, dep_display)
+    dep_source = "세무사 분개장" if True else "직원 분개장 12월"
+    st.caption(
+        f"📊 감가상각 자동 배분 — {selected_year}년 연간 {annual_dep/1e8:.3f}억 ÷ 12 = "
+        f"{'월 ' + str(round(monthly_dep/1e6, 1)) + '백만원' if mode == '월별' else str(round(annual_dep/1e8, 3)) + '억원/년'}"
+    )
 
 
 def fmt_억(v: float, sign: bool = False) -> str:

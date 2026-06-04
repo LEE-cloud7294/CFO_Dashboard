@@ -6,8 +6,8 @@ from datetime import date
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from core.db import load_journal, get_available_months
-from core.metrics import calc_kpi, calc_health_score
+from core.db import load_journal, get_available_months, get_annual_dep
+from core.metrics import calc_kpi, calc_health_score, apply_monthly_depreciation
 from core.aging import calc_aging, calc_concentration
 
 st.set_page_config(
@@ -95,6 +95,21 @@ if prev_kpi and prev_ym:
     prev_aging = calc_aging(prev_df)
     prev_conc = calc_concentration(prev_aging)
     prev_kpi["상위5집중도"] = prev_conc["상위5집중도"]
+
+# 감가상각 ÷12 자동 적용 (tax_journal > 직원분개장 12월 자동추출)
+@st.cache_data(ttl=3600)
+def get_dep_cached(year: str) -> float:
+    return get_annual_dep(year)
+
+annual_dep = get_dep_cached(selected_ym[:4])
+if annual_dep > 0:
+    monthly_dep = annual_dep / 12
+    kpi = apply_monthly_depreciation(kpi, monthly_dep)
+    if prev_kpi:
+        prev_year = prev_ym[:4] if prev_ym else selected_ym[:4]
+        prev_annual_dep = get_dep_cached(prev_year)
+        if prev_annual_dep > 0:
+            prev_kpi = apply_monthly_depreciation(prev_kpi, prev_annual_dep / 12)
 
 health = calc_health_score(kpi, prev_kpi)
 

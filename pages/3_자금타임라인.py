@@ -191,6 +191,72 @@ else:
 
 st.markdown("---")
 
+# ── 섹션 2-5: 보통예금 실제 현금 흐름 ────────────────────────────────────────
+st.header("💰 보통예금(103) 실제 현금 흐름")
+
+if sel_ym:
+    @st.cache_data(ttl=300)
+    def load_cashflow(ym: str):
+        df = load_journal(ym)
+        if df.empty:
+            return pd.DataFrame()
+        return df[df["계정코드"].astype(str) == "103"].copy()
+
+    cf = load_cashflow(sel_ym)
+
+    if cf.empty:
+        st.info("해당 월 보통예금(103) 데이터가 없습니다.")
+    else:
+        total_in = cf["차변"].sum()    # 입금
+        total_out = cf["대변"].sum()   # 출금
+        net = total_in - total_out
+
+        ci1, ci2, ci3 = st.columns(3)
+        ci1.metric("총 입금", f"{total_in/1e8:.2f}억원")
+        ci2.metric("총 출금", f"{total_out/1e8:.2f}억원")
+        ci3.metric(
+            "순 현금 변화",
+            f"{net/1e8:+.2f}억원",
+            delta="입금 우세" if net > 0 else "출금 우세",
+            delta_color="normal" if net > 0 else "inverse",
+        )
+
+        col_in, col_out = st.columns(2)
+
+        with col_in:
+            st.subheader("📥 주요 입금")
+            inflow = cf[cf["차변"] > 0].copy()
+            if not inflow.empty:
+                top_in = (
+                    inflow.groupby("거래처")["차변"]
+                    .sum()
+                    .sort_values(ascending=False)
+                    .head(8)
+                    .reset_index()
+                )
+                top_in.columns = ["거래처", "금액"]
+                top_in["비중"] = (top_in["금액"] / total_in * 100).apply(lambda v: f"{v:.1f}%")
+                top_in["금액"] = top_in["금액"].apply(lambda v: f"{v/1e6:.1f}백만")
+                st.dataframe(top_in, use_container_width=True, hide_index=True)
+
+        with col_out:
+            st.subheader("📤 주요 출금")
+            outflow = cf[cf["대변"] > 0].copy()
+            if not outflow.empty:
+                top_out = (
+                    outflow.groupby("거래처")["대변"]
+                    .sum()
+                    .sort_values(ascending=False)
+                    .head(8)
+                    .reset_index()
+                )
+                top_out.columns = ["거래처", "금액"]
+                top_out["비중"] = (top_out["금액"] / total_out * 100).apply(lambda v: f"{v:.1f}%")
+                top_out["금액"] = top_out["금액"].apply(lambda v: f"{v/1e6:.1f}백만")
+                st.dataframe(top_out, use_container_width=True, hide_index=True)
+
+st.markdown("---")
+
 # ── 섹션 3: 이자비용 월 추이 ──────────────────────────────────────────────────
 st.header("📈 이자비용 월 추이 (분개장 931계정)")
 
