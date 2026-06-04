@@ -158,6 +158,7 @@ st.markdown("---")
 인건비 = cur_kpi.get("인건비", 0)
 영업이익 = cur_kpi.get("영업이익_v7", 0)
 이자비용 = cur_kpi.get("이자비용", 0)
+자산처분손실 = cur_kpi.get("자산처분손실", 0)
 실질이익 = cur_kpi.get("실질이익", 0)
 buckets = cur_kpi.get("비용대분류_v7", {})
 
@@ -270,6 +271,12 @@ html = f"""
     <td class='right'>{pct(이자비용, 매출)}</td>
     <td class='right'>—</td>
   </tr>
+  {"" if 자산처분손실 == 0 else f"""  <tr>
+    <td>&nbsp;&nbsp;자산처분손실 <span style='font-size:11px;color:#6b7280;'>(일회성)</span></td>
+    <td class='right'>−{fmt_억(자산처분손실)}</td>
+    <td class='right'>{pct(자산처분손실, 매출)}</td>
+    <td class='right'>—</td>
+  </tr>"""}
   <tr class='total-row'>
     <td class='{real_cls}'>실질이익</td>
     <td class='right {real_cls}'>{fmt_억(실질이익, sign=True)}</td>

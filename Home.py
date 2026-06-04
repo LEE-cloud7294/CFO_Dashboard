@@ -102,6 +102,7 @@ health = calc_health_score(kpi, prev_kpi)
 영업이익_v7 = kpi["영업이익_v7"]
 영업이익률_v7 = kpi["영업이익률_v7"]
 이자비용 = kpi["이자비용"]
+자산처분손실 = kpi["자산처분손실"]
 실질이익 = kpi["실질이익"]
 원재료순 = kpi["원재료순"]
 부재료매입 = kpi["부재료매입"]
@@ -188,6 +189,8 @@ if prev_kpi:
     margin_diff_str = f"전월비 {diff:+.1f}%p"
 pl_rows.append({"항목": "── 영업이익 ──", "금액": fmt_억(영업이익_v7), "매출대비": pct_str(영업이익_v7) + (f"  ({margin_diff_str})" if margin_diff_str else "")})
 pl_rows.append({"항목": "이자비용", "금액": f"−{fmt_억(이자비용)}", "매출대비": pct_str(이자비용)})
+if 자산처분손실 > 0:
+    pl_rows.append({"항목": "자산처분손실 (일회성)", "금액": f"−{fmt_억(자산처분손실)}", "매출대비": pct_str(자산처분손실)})
 pl_rows.append({"항목": "── 실질이익 ──", "금액": fmt_억(실질이익), "매출대비": pct_str(실질이익)})
 
 st.dataframe(pd.DataFrame(pl_rows), use_container_width=True, hide_index=True, height=315)
