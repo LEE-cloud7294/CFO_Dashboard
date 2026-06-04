@@ -112,6 +112,7 @@ ROWS = [
     ("환경",          None,            False),
     ("판관비경비",    None,            False),
     ("연구개발",      None,            False),
+    ("대손상각",      None,            False),
     ("기타(미분류)",  None,            False),
     ("감가상각비",    "감가상각비",    False),
     ("영업이익",      "영업이익_v7",   True),
@@ -135,9 +136,10 @@ BUCKET_MAP = {
     "환경":        "환경",
     "판관비경비":  "판관비경비",
     "연구개발":    "연구개발",
+    "대손상각":    "대손상각",
 }
 
-KNOWN_BUCKETS = set(BUCKET_MAP.values()) | {"인건비", "일회성손익", "원재료", "부재료"}
+KNOWN_BUCKETS = set(BUCKET_MAP.values()) | {"인건비", "일회성손익", "원재료", "부재료", "기타", "세금·임차"}
 
 
 def get_val(kpi: dict, label: str, key) -> float:
