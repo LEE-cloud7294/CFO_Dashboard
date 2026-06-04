@@ -191,9 +191,12 @@ buckets = cur_kpi.get("비용대분류_v7", {})
 세금임차 = buckets.get("세금·임차", 0)
 보험료 = buckets.get("보험료", 0)
 안전관리 = buckets.get("안전관리비", 0)
-기타하드 = buckets.get("하드웨어", 0) + buckets.get("대손상각", 0) + buckets.get("자산처분", 0)
+하드웨어 = buckets.get("하드웨어", 0)   # 소모공구비(소모공구·부품 매입)
+대손상각 = buckets.get("대손상각", 0)
 판관비 = buckets.get("판관비경비", 0)
-기타비 = buckets.get("기타", 0) + 안전관리 + 기타하드 + 판관비 + buckets.get("연구개발", 0)
+연구개발 = buckets.get("연구개발", 0)
+기타bucket = buckets.get("기타", 0)
+기타비 = 기타bucket + 안전관리 + 하드웨어 + 대손상각 + 판관비 + 연구개발
 
 prev_매출 = prev_kpi.get("매출액", 0) if prev_kpi else 0
 
@@ -276,11 +279,14 @@ html = f"""
     <td class='right'>—</td>
   </tr>
   <tr>
-    <td>&nbsp;&nbsp;기타</td>
+    <td>&nbsp;&nbsp;기타비용</td>
     <td class='right'>−{fmt_억(기타비)}</td>
     <td class='right'>{pct(기타비, 매출)}</td>
     <td class='right'>—</td>
   </tr>
+  {"" if 하드웨어 == 0 else f"<tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<span style='font-size:11px;color:#9ca3af;'>└ 소모공구비</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>−{fmt_억(하드웨어)}</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>{pct(하드웨어, 매출)}</span></td><td></td></tr>"}
+  {"" if 안전관리 == 0 else f"<tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<span style='font-size:11px;color:#9ca3af;'>└ 안전관리비</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>−{fmt_억(안전관리)}</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>{pct(안전관리, 매출)}</span></td><td></td></tr>"}
+  {"" if 판관비 == 0 else f"<tr><td>&nbsp;&nbsp;&nbsp;&nbsp;<span style='font-size:11px;color:#9ca3af;'>└ 판관비경비</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>−{fmt_억(판관비)}</span></td><td class='right'><span style='font-size:11px;color:#9ca3af;'>{pct(판관비, 매출)}</span></td><td></td></tr>"}
   {"" if not use_dep_line else f"<tr><td>&nbsp;&nbsp;감가상각비 <span style='font-size:11px;color:#60a5fa;'>(÷12 균등배분)</span></td><td class='right'>−{fmt_억(dep_display)}</td><td class='right'>{pct(dep_display, 매출)}</td><td class='right'>—</td></tr>"}
   <tr class='subtotal-row'>
     <td class='{profit_cls}'>영업이익</td>
