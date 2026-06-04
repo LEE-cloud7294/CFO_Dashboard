@@ -7,7 +7,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from core.db import load_journal, get_available_months, get_annual_dep
-from core.metrics import calc_kpi, calc_health_score, apply_monthly_depreciation
+from core.metrics import calc_kpi, calc_health_score, apply_monthly_depreciation, fmt_krw
 from core.aging import calc_aging, calc_concentration
 
 st.set_page_config(
@@ -192,7 +192,7 @@ def pct_str(v):
     return f"{v / 매출액 * 100:.1f}%" if 매출액 > 0 else "—"
 
 def fmt_억(v):
-    return f"{v / 1e8:.2f}억원"
+    return fmt_krw(v)
 
 pl_rows = []
 pl_rows.append({"항목": "매출액", "금액": fmt_억(매출액), "매출대비": "100%"})

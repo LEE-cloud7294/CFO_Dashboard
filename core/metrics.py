@@ -3,6 +3,24 @@ from typing import Optional
 import calendar
 
 
+def fmt_krw(v: float, suffix: str = "원") -> str:
+    """한국식 금액 표시 — 1억 이상: X억 Y,ZZZ만 / 미만: X,XXX만."""
+    v = round(v)
+    sign = "-" if v < 0 else ""
+    av = abs(v)
+    if av >= 1e8:
+        억 = int(av // 1e8)
+        만 = int((av % 1e8) // 1e4)
+        if 만 > 0:
+            return f"{sign}{억:,}억 {만:,}만{suffix}"
+        return f"{sign}{억:,}억{suffix}"
+    elif av >= 1e4:
+        만 = int(av // 1e4)
+        return f"{sign}{만:,}만{suffix}"
+    else:
+        return f"{sign}{av:,.0f}{suffix}"
+
+
 def apply_monthly_depreciation(kpi: dict, monthly_dep: float) -> dict:
     """kpi dict에 월별 감가상각 적용 (항상 ÷12 균등 배분).
 

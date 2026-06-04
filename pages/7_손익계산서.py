@@ -4,7 +4,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from core.db import load_journal, get_available_months, get_annual_dep
-from core.metrics import calc_kpi, apply_monthly_depreciation
+from core.metrics import calc_kpi, apply_monthly_depreciation, fmt_krw
 
 st.set_page_config(page_title="손익계산서", page_icon="📄", layout="wide")
 
@@ -145,8 +145,8 @@ if use_dep_line:
 
 
 def fmt_억(v: float, sign: bool = False) -> str:
-    s = "+" if sign and v > 0 else ("-" if v < 0 else "")
-    return f"{s}{abs(v)/1e8:.2f}억"
+    s = "+" if sign and v > 0 else ""
+    return s + fmt_krw(v)
 
 
 def pct(v: float, base: float) -> str:
