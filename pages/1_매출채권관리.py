@@ -39,9 +39,14 @@ as_of = date(year, month, last_day)
 
 @st.cache_data(ttl=300)
 def load_cumulative(ym: str):
+    # 최근 24개월만 로드 — 2년 이상 된 미수금은 실무상 별도 처리
     df = load_journal_upto(ym)
-    if not df.empty and "계정그룹" not in df.columns:
-        df["계정그룹"] = df["계정코드"].astype(str).str[:1]
+    if not df.empty:
+        if "계정그룹" not in df.columns:
+            df["계정그룹"] = df["계정코드"].astype(str).str[:1]
+        cutoff_year = int(ym[:4]) - 2
+        cutoff = f"{cutoff_year}-{ym[5:7]}-01"
+        df = df[df["전표일자"] >= cutoff]
     return df
 
 @st.cache_data(ttl=3600)
@@ -158,7 +163,8 @@ if not summary_df.empty:
         if r >= 80: return "🟡 주의"
         return "🔴 위험"
 
-    display_summary = summary_df.copy()
+    # DSO 높은 순(회수 느린 거래처가 위로)으로 정렬
+    display_summary = summary_df.sort_values("DSO(일)", ascending=False, na_position="last").copy()
     display_summary["위험도"] = display_summary.apply(recovery_badge, axis=1)
     display_summary["발생액"] = display_summary["발생액"].apply(lambda v: f"{v/1e6:.1f}백만")
     display_summary["회수액"] = display_summary["회수액"].apply(lambda v: f"{v/1e6:.1f}백만")
