@@ -22,6 +22,7 @@ def apply_monthly_depreciation(kpi: dict, monthly_dep: float) -> dict:
     kpi["영업이익률_v7"] = round(kpi["영업이익_v7"] / 매출 * 100, 2) if 매출 > 0 else 0
     kpi["자산처분손실"] = 0  # 직원분개장 연말 덩어리 제거 (월별 배분으로 대체)
     kpi["감가상각_월"] = monthly_dep
+    kpi["감가상각비"] = monthly_dep  # 연간비교·표 표시용
     kpi["실질이익"] = (
         kpi["영업이익_v7"]
         + kpi.get("영업외수익", 0)
