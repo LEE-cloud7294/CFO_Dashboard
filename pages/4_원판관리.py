@@ -115,10 +115,23 @@ st.markdown("---")
 st.subheader("💰 원판 단가 비교표")
 st.caption("원/㎡ · 원/평 동시 표시 | 10% 이상 변동 품목 ⚠️ 경보")
 
+def _calc_pyeong(row):
+    """원/평 = 원/m² ÷ 10.764 (유리업계: 평 = ft²). DB에 0이면 원_m2에서 환산."""
+    p = row.get("원_평", 0) or 0
+    if p > 0:
+        return p
+    m2 = row.get("원_m2", 0) or 0
+    return round(m2 / 10.764) if m2 > 0 else 0
+
+
 if price_df.empty:
     st.info(f"{sel_ym} 단가 데이터 없음")
 else:
-    # 단가 변동 경보 (10% 이상)
+    # 원_평 보정: 0인 경우 원_m2에서 환산
+    price_df = price_df.copy()
+    price_df["원_평_표시"] = price_df.apply(_calc_pyeong, axis=1)
+
+    # 단가 변동 경보
     if "오기여부" in price_df.columns:
         오기 = price_df[price_df["오기여부"] == True]
         if not 오기.empty:
@@ -132,38 +145,32 @@ else:
     if sel_vendor != "전체" and "거래처" in disp.columns:
         disp = disp[disp["거래처"] == sel_vendor]
 
-    # 표시용 가공
-    disp_cols = []
-    for col in ["거래처", "원산지", "두께", "규격자", "규격mm", "일자", "면적_m2", "금액_원", "원_m2", "원_평", "파일_원_m2", "파일_원_평", "오기여부"]:
-        if col in disp.columns:
-            disp_cols.append(col)
-
     if "금액_원" in disp.columns:
         disp["금액"] = disp["금액_원"].apply(fmt_krw)
+    if "원_평_표시" in disp.columns:
+        disp["원/평"] = disp["원_평_표시"].apply(lambda v: f"{int(v):,}원" if v > 0 else "—")
     if "원_m2" in disp.columns:
-        disp["원/㎡"] = disp["원_m2"].apply(lambda v: f"{v:,.0f}원")
-    if "원_평" in disp.columns:
-        disp["원/평"] = disp["원_평"].apply(lambda v: f"{v:,.0f}원")
+        disp["원/㎡"] = disp["원_m2"].apply(lambda v: f"{v:,.0f}원" if v > 0 else "—")
 
-    show_cols = [c for c in ["거래처", "원산지", "두께", "규격자", "일자", "금액", "원/㎡", "원/평", "오기여부"] if c in disp.columns]
+    show_cols = [c for c in ["거래처", "원산지", "두께", "규격자", "일자", "금액", "원/평", "원/㎡", "오기여부"] if c in disp.columns]
     st.dataframe(disp[show_cols].sort_values(["두께", "거래처"] if "두께" in disp.columns else []),
                  use_container_width=True, hide_index=True)
+    st.caption("원/평 = 원/㎡ ÷ 10.764 (유리업계 단위: 평 = 1ft²)")
 
-    # 두께별 평균 단가 바차트
-    if "두께" in price_df.columns and "원_m2" in price_df.columns:
+    # 두께별 평균 단가 바차트 — 원/평 기준
+    if "두께" in price_df.columns and "원_평_표시" in price_df.columns:
         st.markdown("---")
-        st.subheader("📊 두께별 평균 단가 (원/㎡)")
-        st.caption("같은 두께의 모든 사이즈를 통합한 거래처별 평균 — 사이즈 무관")
+        st.subheader("📊 두께별 평균 단가 (원/평)")
+        st.caption("같은 두께의 모든 사이즈를 통합한 거래처별 평균 | 원/평 = 원/㎡ ÷ 10.764")
 
+        avg_src = price_df[price_df["원_평_표시"] > 0]
         avg_by_thick = (
-            price_df[price_df["원_m2"] > 0]
-            .groupby(["두께", "거래처"])["원_m2"]
+            avg_src.groupby(["두께", "거래처"])["원_평_표시"]
             .mean()
             .reset_index()
             .sort_values("두께")
-        ) if "거래처" in price_df.columns else (
-            price_df[price_df["원_m2"] > 0]
-            .groupby("두께")["원_m2"].mean().reset_index()
+        ) if "거래처" in avg_src.columns else (
+            avg_src.groupby("두께")["원_평_표시"].mean().reset_index()
         )
 
         vendors_sorted = sorted(avg_by_thick["거래처"].unique()) if "거래처" in avg_by_thick.columns else []
@@ -179,29 +186,25 @@ else:
                 fig.add_trace(go.Bar(
                     name=vendor,
                     x=sub["두께"].astype(str) + "mm",
-                    y=sub["원_m2"],
+                    y=sub["원_평_표시"],
                     marker_color=vendor_color[vendor],
-                    text=sub["원_m2"].apply(lambda v: f"{v:,.0f}원"),
+                    text=sub["원_평_표시"].apply(lambda v: f"{int(v):,}원"),
                     textposition="outside",
                     textfont=dict(size=11),
                 ))
         else:
             fig.add_trace(go.Bar(
                 x=avg_by_thick["두께"].astype(str) + "mm",
-                y=avg_by_thick["원_m2"],
+                y=avg_by_thick["원_평_표시"],
                 marker_color="#60a5fa",
-                text=avg_by_thick["원_m2"].apply(lambda v: f"{v:,.0f}원"),
+                text=avg_by_thick["원_평_표시"].apply(lambda v: f"{int(v):,}원"),
                 textposition="outside",
             ))
 
         fig.update_layout(
             barmode="group",
             xaxis_title="두께 (mm)",
-            yaxis=dict(
-                title="원/㎡",
-                tickformat=",.0f",
-                ticksuffix="원",
-            ),
+            yaxis=dict(title="원/평", tickformat=",.0f", ticksuffix="원"),
             height=380,
             margin=dict(t=20, b=40),
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
@@ -212,8 +215,8 @@ else:
 
 # ── 월별 단가 추이 (꺾은선) ───────────────────────────────────────────────
 st.markdown("---")
-st.subheader("📈 월별 단가 추이 (원/㎡)")
-st.caption("거래처별 월평균 단가 변화 — 가격 상승/하락 추적")
+st.subheader("📈 월별 단가 추이 (원/평)")
+st.caption("거래처별 월평균 단가 변화 — 가격 상승/하락 추적 | 원/평 = 원/㎡ ÷ 10.764")
 
 if not all_price_df.empty and "원_m2" in all_price_df.columns:
     trend_years = sorted(
@@ -232,11 +235,12 @@ if not all_price_df.empty and "원_m2" in all_price_df.columns:
         thick_filter_opts = ["전체"] + [f"{t}mm" for t in thick_vals]
         sel_trend_thick = tcol2.selectbox("두께 필터", thick_filter_opts, index=0, key="trend_thick")
 
-        # 해당 연도 데이터 필터
+        # 해당 연도 데이터 필터 + 원_평 보정
         trend_df = all_price_df[
-            (all_price_df["year"].astype(str) == sel_trend_year) &
-            (all_price_df["원_m2"] > 0)
+            all_price_df["year"].astype(str) == sel_trend_year
         ].copy()
+        trend_df["원_평_표시"] = trend_df.apply(_calc_pyeong, axis=1)
+        trend_df = trend_df[trend_df["원_평_표시"] > 0]
 
         if sel_trend_thick != "전체":
             t_val = int(sel_trend_thick.replace("mm", ""))
@@ -246,10 +250,10 @@ if not all_price_df.empty and "원_m2" in all_price_df.columns:
         if trend_df.empty:
             st.info(f"{sel_trend_year}년 단가 데이터 없음")
         else:
-            # 월 + 거래처별 평균 원/m2
+            # 월 + 거래처별 평균 원/평
             if "month" in trend_df.columns and "거래처" in trend_df.columns:
                 monthly_avg = (
-                    trend_df.groupby(["month", "거래처"])["원_m2"]
+                    trend_df.groupby(["month", "거래처"])["원_평_표시"]
                     .mean()
                     .reset_index()
                 )
@@ -271,12 +275,12 @@ if not all_price_df.empty and "원_m2" in all_price_df.columns:
                     color = vendor_color_t.get(vendor, "#94a3b8")
                     fig_trend.add_trace(go.Scatter(
                         x=sub["월"],
-                        y=sub["원_m2"],
+                        y=sub["원_평_표시"],
                         mode="lines+markers+text",
                         name=vendor,
                         line=dict(color=color, width=2),
                         marker=dict(size=8, color=color),
-                        text=sub["원_m2"].apply(lambda v: f"{v:,.0f}"),
+                        text=sub["원_평_표시"].apply(lambda v: f"{int(v):,}"),
                         textposition="top center",
                         textfont=dict(size=10),
                     ))
@@ -284,13 +288,13 @@ if not all_price_df.empty and "원_m2" in all_price_df.columns:
                 thick_label = f" ({sel_trend_thick})" if sel_trend_thick != "전체" else " (전 두께 평균)"
                 fig_trend.update_layout(
                     title=dict(
-                        text=f"{sel_trend_year}년 월별 원/㎡ 단가 추이{thick_label}",
+                        text=f"{sel_trend_year}년 월별 원/평 단가 추이{thick_label}",
                         font=dict(size=14, color="white"),
                         x=0,
                     ),
                     xaxis_title="월",
                     yaxis=dict(
-                        title="원/㎡",
+                        title="원/평",
                         tickformat=",.0f",
                         ticksuffix="원",
                     ),
@@ -303,14 +307,13 @@ if not all_price_df.empty and "원_m2" in all_price_df.columns:
                 )
                 st.plotly_chart(fig_trend, use_container_width=True)
 
-                # 전월 대비 변동 표
+                # 월별 단가 피벗 표 (원/평)
                 if len(monthly_avg["월"].unique()) >= 2:
-                    st.markdown("**월별 단가 변동 요약**")
-                    pivot = monthly_avg.pivot(index="거래처", columns="월", values="원_m2")
+                    st.markdown("**월별 원/평 단가 변동**")
+                    pivot = monthly_avg.pivot(index="거래처", columns="월", values="원_평_표시")
                     cols_sorted = sorted(pivot.columns, key=lambda x: int(x.replace("월", "")))
                     pivot = pivot[cols_sorted]
-                    # 서식 적용
-                    pivot_disp = pivot.applymap(lambda v: f"{v:,.0f}원" if pd.notna(v) else "—")
+                    pivot_disp = pivot.applymap(lambda v: f"{int(v):,}원" if pd.notna(v) and v > 0 else "—")
                     st.dataframe(pivot_disp, use_container_width=True)
     else:
         st.info("단가 데이터 없음")
@@ -424,29 +427,25 @@ else:
 
     # 표시용 가공
     detail_disp = detail_df.copy()
+    # 원_평 보정 (0이면 원_m2에서 환산)
+    detail_disp["원_평_표시"] = detail_disp.apply(_calc_pyeong, axis=1)
+
     if "금액_원" in detail_disp.columns:
         detail_disp["금액(부가세제외)"] = detail_disp["금액_원"].apply(fmt_krw)
-    # 부가세 (저장된 값 우선, 없으면 10% 계산)
-    if "부가세_원" in detail_disp.columns:
-        detail_disp["부가세(10%)"] = detail_disp["부가세_원"].apply(
-            lambda v: fmt_krw(v) if pd.notna(v) and v > 0 else fmt_krw(detail_disp.loc[detail_disp.index[0], "금액_원"] * 0.1)
-        )
-        detail_disp["부가세(10%)"] = detail_disp.apply(
-            lambda r: fmt_krw(r["부가세_원"]) if pd.notna(r.get("부가세_원")) and r.get("부가세_원", 0) > 0
-                      else fmt_krw(r.get("금액_원", 0) * 0.1), axis=1
-        )
-    elif "금액_원" in detail_disp.columns:
-        detail_disp["부가세(10%)"] = detail_disp["금액_원"].apply(lambda v: fmt_krw(round(v * 0.1)))
+    detail_disp["부가세(10%)"] = detail_disp.apply(
+        lambda r: fmt_krw(r["부가세_원"]) if r.get("부가세_원", 0) > 0
+                  else fmt_krw(round(r.get("금액_원", 0) * 0.1)), axis=1
+    )
     if "합계_원" in detail_disp.columns:
         detail_disp["합계(부가세포함)"] = detail_disp["합계_원"].apply(
             lambda v: fmt_krw(v) if pd.notna(v) and v > 0 else "—"
         )
     elif "금액_원" in detail_disp.columns:
         detail_disp["합계(부가세포함)"] = detail_disp["금액_원"].apply(lambda v: fmt_krw(round(v * 1.1)))
+    # 원/평 (보정값), 원/㎡ 모두 표시
+    detail_disp["원/평"] = detail_disp["원_평_표시"].apply(lambda v: f"{int(v):,}원" if v > 0 else "—")
     if "원_m2" in detail_disp.columns:
-        detail_disp["원/㎡"] = detail_disp["원_m2"].apply(lambda v: f"{v:,.0f}" if v else "—")
-    if "원_평" in detail_disp.columns:
-        detail_disp["원/평"] = detail_disp["원_평"].apply(lambda v: f"{v:,.0f}" if v else "—")
+        detail_disp["원/㎡"] = detail_disp["원_m2"].apply(lambda v: f"{v:,.0f}원" if v > 0 else "—")
     if "면적_m2" in detail_disp.columns:
         detail_disp["면적(㎡)"] = detail_disp["면적_m2"].apply(lambda v: f"{v:.3f}" if v else "—")
 
@@ -455,8 +454,8 @@ else:
         detail_disp["연월"] = detail_disp["year"].astype(str) + "-" + detail_disp["month"].astype(str).str.zfill(2)
 
     show_cols = [c for c in ["연월", "일자", "거래처", "원산지", "두께", "규격자", "규격mm",
-                              "면적(㎡)", "금액(부가세제외)", "부가세(10%)", "합계(부가세포함)",
-                              "원/㎡", "원/평", "오기여부"]
+                              "면적(㎡)", "원/평", "원/㎡",
+                              "금액(부가세제외)", "부가세(10%)", "합계(부가세포함)", "오기여부"]
                  if c in detail_disp.columns]
 
     st.dataframe(detail_disp[show_cols], use_container_width=True, hide_index=True,
