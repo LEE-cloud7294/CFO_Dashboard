@@ -119,8 +119,8 @@ def load_all_journal() -> pd.DataFrame:
 def load_journal_upto(ym: str) -> pd.DataFrame:
     """선택월 말일까지 전체 누적 분개 데이터 로드 (AR aging용).
 
-    매출채권 FIFO 정확도를 위해 창업일부터 전체 이력 조회.
-    날짜 제한 없음 — 수년 전 발생한 미수금도 정확히 추적.
+    108+110 계정만 로드해 전체 분개 대비 ~5% 크기로 속도·안정성 개선.
+    매출채권 FIFO / 어음수취 판별에 필요한 계정만 포함.
     """
     import calendar
     year, month = int(ym[:4]), int(ym[5:7])
@@ -130,20 +130,37 @@ def load_journal_upto(ym: str) -> pd.DataFrame:
     client = get_client()
     all_data = []
     page_size = 1000
-    offset = 0
-    while True:
-        res = (client.table("journal")
-               .select("*")
-               .lte("전표일자", end_date)
-               .order("전표일자")
-               .range(offset, offset + page_size - 1)
-               .execute())
-        if not res.data:
-            break
-        all_data.extend(res.data)
-        if len(res.data) < page_size:
-            break
-        offset += page_size
+
+    for code_prefix in ["108", "110"]:
+        offset = 0
+        while True:
+            try:
+                res = (client.table("journal")
+                       .select("*")
+                       .like("계정코드", f"{code_prefix}%")
+                       .lte("전표일자", end_date)
+                       .order("전표일자")
+                       .range(offset, offset + page_size - 1)
+                       .execute())
+            except Exception:
+                # HTTP/2 일시 오류 시 1회 재시도
+                try:
+                    res = (client.table("journal")
+                           .select("*")
+                           .like("계정코드", f"{code_prefix}%")
+                           .lte("전표일자", end_date)
+                           .order("전표일자")
+                           .range(offset, offset + page_size - 1)
+                           .execute())
+                except Exception:
+                    break
+            if not res.data:
+                break
+            all_data.extend(res.data)
+            if len(res.data) < page_size:
+                break
+            offset += page_size
+
     if not all_data:
         return pd.DataFrame()
     df = pd.DataFrame(all_data)
