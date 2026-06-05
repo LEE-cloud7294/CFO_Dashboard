@@ -357,7 +357,13 @@ def upsert_raw_material_price(df: pd.DataFrame, year: str, month: str) -> int:
     try:
         client.table("raw_material_price").delete().eq("year", year).eq("month", month).execute()
         send_cols = [c for c in RAW_MATERIAL_PRICE_COLUMNS if c in df.columns]
-        records = df[send_cols].to_dict(orient="records")
+        df_clean = df[send_cols].copy()
+        # NaN / inf → None (JSON 직렬화 오류 방지)
+        df_clean = df_clean.where(pd.notna(df_clean), None)
+        # numpy float → python float (supabase client 호환)
+        for col in df_clean.select_dtypes(include=["float64", "float32"]).columns:
+            df_clean[col] = df_clean[col].apply(lambda v: float(v) if v is not None else None)
+        records = df_clean.to_dict(orient="records")
         batch = 500
         for i in range(0, len(records), batch):
             client.table("raw_material_price").insert(records[i:i+batch]).execute()
