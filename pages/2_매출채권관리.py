@@ -10,7 +10,8 @@ from core.db import (load_journal_upto, get_available_months, load_master_blackl
                      is_erp_ar_verified, set_erp_ar_verified)
 from core.aging import (calc_aging, calc_ar_summary, calc_concentration,
                         calc_overdue_ratio, extract_ar_collections,
-                        calc_payment_pattern, calc_bills_receivable)
+                        calc_payment_pattern, calc_bills_receivable,
+                        calc_partner_deep)
 from core.metrics import fmt_krw
 
 st.set_page_config(page_title="매출채권 관리", page_icon="📋", layout="wide")
@@ -224,129 +225,147 @@ if not aging_df.empty:
                               "주의(31-60)", "경고(61-90)", "정상(0-30)"] if c in display_aging.columns]
     st.dataframe(display_aging[show_cols], use_container_width=True, hide_index=True, height=400)
 
-# ── 거래처별 회수율 · DSO (참고용) ────────────────────────────────────────
+# ── 거래처 심층 분석 ─────────────────────────────────────────────────────
 st.markdown("---")
-st.subheader("📊 거래처별 회수율 · DSO (참고용 *)")
-st.caption("⚠️ ERP 대조 완료 전까지 회수율·DSO는 정정전표로 인해 부정확할 수 있습니다.")
+st.subheader("🔍 거래처 심층 분석")
+st.caption("거래처를 선택하면 발생/회수 추이·완결DSO·미수 경과일을 한 화면에서 분석합니다.")
 
-if not summary_df.empty:
-    coll_df = extract_ar_collections(df)
-    수단_pivot = pd.DataFrame()
-    if not coll_df.empty:
-        coll_grp = coll_df.groupby(["거래처", "수단"])["회수액"].sum().unstack(fill_value=0).reset_index()
-        수단_pivot = coll_grp
+partners_list = sorted(aging_df["거래처"].dropna().tolist()) if not aging_df.empty else []
+sel_partner = st.selectbox(
+    "거래처 검색·선택",
+    ["선택하세요"] + partners_list,
+    key="partner_drill",
+)
 
-    def recovery_badge(row):
-        r = row["회수율(%)"]
-        if r >= 95: return "🟢 양호"
-        if r >= 80: return "🟡 주의"
-        return "🔴 위험"
+if sel_partner != "선택하세요":
+    with st.spinner(f"{sel_partner} 분석 중..."):
+        deep = calc_partner_deep(df, sel_partner, as_of=as_of)
 
-    display_summary = summary_df.copy()
-    if "경과일" in display_summary.columns:
-        display_summary = display_summary.sort_values("경과일", ascending=False, na_position="last")
-    else:
-        display_summary = display_summary.sort_values("DSO(일)", ascending=False, na_position="last")
+    # ── 요약 카드 ──────────────────────────────────────────────────────
+    c1, c2, c3 = st.columns(3)
+    c1.metric("누계 발생액", fmt_krw(deep["total_dr"]))
+    c2.metric("누계 회수액", fmt_krw(deep["total_cr"]))
+    bal = deep["balance"]
+    c3.metric("현재 잔액(FIFO)", fmt_krw(bal),
+              delta="ERP 일치" if abs(bal - deep["balance"]) < 1000 else None)
 
-    display_summary["위험도"] = display_summary.apply(recovery_badge, axis=1)
-    display_summary["발생액"] = display_summary["발생액"].apply(fmt_krw)
-    display_summary["회수액"] = display_summary["회수액"].apply(fmt_krw)
-    display_summary["잔액"] = display_summary["잔액"].apply(fmt_krw)
-    display_summary["회수율(%) *"] = display_summary["회수율(%)"].apply(lambda v: f"{v:.1f}%")
-    display_summary["DSO(일) *"] = display_summary["DSO(일)"].apply(
-        lambda v: f"{v}일" if pd.notna(v) else "—"
+    c4, c5, c6, c7 = st.columns(4)
+    회수율 = min(deep["total_cr"], deep["total_dr"]) / deep["total_dr"] * 100 if deep["total_dr"] > 0 else 0
+    c4.metric("회수율", f"{회수율:.1f}%")
+    c5.metric("완결 DSO",
+              f"{deep['completed_dso']:.0f}일" if deep["completed_dso"] else "—",
+              delta="회수된 채권 평균 소요일",
+              delta_color="off")
+    c6.metric("미수 가중 경과일",
+              f"{deep['outstanding_weighted_age']:.0f}일" if deep["outstanding_weighted_age"] else "—",
+              delta="⚠️ 위험" if deep["outstanding_weighted_age"] > 90 else "정상",
+              delta_color="inverse" if deep["outstanding_weighted_age"] > 90 else "off")
+    c7.metric("최장 미수",
+              f"{deep['oldest_age']}일" if deep["oldest_age"] else "—",
+              delta="🔴" if deep["oldest_age"] > 180 else None,
+              delta_color="off")
+
+    avg_bal = deep["avg_balance"]
+    st.caption(
+        f"📊 월평균 AR 잔액: **{fmt_krw(avg_bal)}** "
+        f"{'| ⚠️ 정정전표 있음' if deep['has_correction'] else ''}"
     )
-    if "정정전표" in display_summary.columns:
-        display_summary["정정전표"] = display_summary["정정전표"].apply(lambda v: "⚠️" if v else "")
-    if "경과일" in display_summary.columns:
-        display_summary["경과일"] = display_summary["경과일"].apply(
-            lambda v: f"{int(v)}일" if pd.notna(v) else "—"
-        )
 
-    if not 수단_pivot.empty and "어음수취" in 수단_pivot.columns:
-        어음_map = 수단_pivot.set_index("거래처")["어음수취"].to_dict()
-        display_summary["어음수취"] = display_summary["거래처"].map(
-            lambda g: fmt_krw(어음_map.get(g, 0)) if 어음_map.get(g, 0) > 0 else "—"
-        )
-        show_cols = ["거래처", "발생액", "회수액", "잔액", "회수율(%) *", "DSO(일) *",
-                     "경과일", "어음수취", "정정전표", "위험도"]
-    else:
-        show_cols = ["거래처", "발생액", "회수액", "잔액", "회수율(%) *", "DSO(일) *",
-                     "경과일", "정정전표", "위험도"]
-
-    show_cols = [c for c in show_cols if c in display_summary.columns]
-    st.dataframe(display_summary[show_cols], use_container_width=True, hide_index=True, height=380)
-    st.caption("* ERP 대조 완료 전 참고용 | ⚠️ = 정정전표 있는 거래처")
-else:
-    st.info("회수율 데이터 없음")
-
-# ── 거래처별 실제 결제 기간 분석 ─────────────────────────────────────────
-st.markdown("---")
-st.subheader("📐 거래처별 실제 결제 기간 분석")
-st.caption("FIFO 매칭으로 각 발생 건이 실제로 회수까지 얼마나 걸렸는지 추적")
-
-with st.spinner("결제 패턴 분석 중..."):
-    pattern_df = calc_payment_pattern(df)
-
-if not pattern_df.empty:
-    if hide_blacklist:
-        bl_set = set(get_blacklist())
-        pattern_df = pattern_df[~pattern_df["거래처"].isin(bl_set)]
-
-    display_pat = pattern_df.copy()
-    display_pat["발생액"] = display_pat["발생액"].apply(fmt_krw)
-    display_pat["잔액"] = display_pat["잔액"].apply(fmt_krw)
-    display_pat["회수율(%)"] = display_pat["회수율(%)"].apply(lambda v: f"{v:.1f}%")
-    display_pat["평균결제일"] = display_pat["평균결제일"].apply(lambda v: f"{v}일")
-    display_pat["권장여신(일)"] = display_pat["권장여신(일)"].apply(lambda v: f"{v}일")
-
-    st.markdown("**거래처별 결제기간 분포 (금액 기준 가중평균)**")
-    fig_pat = go.Figure()
-    colors = {"30일이내(%)": "#4ade80", "31-60일(%)": "#fbbf24",
-              "61-90일(%)": "#fb923c", "91일이상(%)": "#f87171"}
-    for col, color in colors.items():
-        fig_pat.add_trace(go.Bar(
-            name=col.replace("(%)", ""),
-            x=pattern_df[col],
-            y=pattern_df["거래처"],
-            orientation="h",
-            marker_color=color,
-            text=pattern_df[col].apply(lambda v: f"{v:.0f}%" if v >= 5 else ""),
-            textposition="inside",
-            textfont_size=10,
+    # ── 월별 발생/회수/잔액 추이 차트 ─────────────────────────────────
+    all_ym = sorted(set(list(deep["monthly_dr"].keys()) + list(deep["monthly_cr"].keys())))
+    if all_ym:
+        fig_deep = go.Figure()
+        fig_deep.add_trace(go.Bar(
+            name="발생", x=all_ym,
+            y=[deep["monthly_dr"].get(ym, 0) / 1e6 for ym in all_ym],
+            marker_color="#60a5fa", opacity=0.75,
         ))
-    fig_pat.update_layout(
-        barmode="stack",
-        height=max(280, len(pattern_df) * 35),
-        margin=dict(t=10, b=10, l=10, r=60),
-        xaxis=dict(title="비중 (%)", range=[0, 100]),
-        yaxis=dict(autorange="reversed"),
-        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="white"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-    )
-    st.plotly_chart(fig_pat, use_container_width=True)
+        fig_deep.add_trace(go.Bar(
+            name="회수", x=all_ym,
+            y=[deep["monthly_cr"].get(ym, 0) / 1e6 for ym in all_ym],
+            marker_color="#34d399", opacity=0.75,
+        ))
+        fig_deep.add_trace(go.Scatter(
+            name="월말 잔액", x=all_ym,
+            y=[deep["monthly_balance"].get(ym, 0) / 1e6 for ym in all_ym],
+            mode="lines+markers",
+            line=dict(color="#f87171", width=2),
+            marker=dict(size=5),
+            yaxis="y2",
+        ))
+        fig_deep.update_layout(
+            barmode="group",
+            yaxis=dict(title="발생/회수 (백만원)", tickformat=",.0f"),
+            yaxis2=dict(title="잔액 (백만원)", overlaying="y", side="right",
+                        tickformat=",.0f"),
+            height=360, margin=dict(t=20, b=40),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="white"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig_deep, use_container_width=True)
+        st.caption("파란 막대=발생 | 초록 막대=회수 | 빨간 선=월말잔액 (우측 Y축)")
 
-    with st.expander("📋 거래처별 결제기간 상세 테이블"):
-        show_cols = ["거래처", "발생액", "잔액", "회수율(%)",
-                     "평균결제일", "최소결제일", "최대결제일",
-                     "30일이내(%)", "31-60일(%)", "61-90일(%)", "91일이상(%)", "권장여신(일)"]
-        st.dataframe(display_pat[show_cols], use_container_width=True, hide_index=True)
+    # ── 결제 기간 분포 (이 거래처만) ──────────────────────────────────
+    with st.spinner("결제 패턴 분석 중..."):
+        p_pattern = calc_payment_pattern(df)
+    partner_pat = p_pattern[p_pattern["거래처"] == sel_partner] if not p_pattern.empty else pd.DataFrame()
 
-    st.markdown("**⚠️ 권장 여신기간 vs 현황**")
-    for _, row in pattern_df.iterrows():
-        avg = row["평균결제일"]
-        rec = row["권장여신(일)"]
-        pct_over = row["91일이상(%)"]
-        if pct_over >= 20:
-            icon, msg = "🔴", f"91일 초과 비중 {pct_over:.0f}% — 여신 조건 재협의 필요"
-        elif avg > 60:
-            icon, msg = "🟡", f"평균 {avg}일 결제 — 여신 기준 재확인 필요"
+    col_donut, col_info = st.columns([1, 1])
+    with col_donut:
+        # 현재 미수 aging (FIFO 잔액 기준)
+        partner_aging = aging_df[aging_df["거래처"] == sel_partner]
+        if not partner_aging.empty:
+            row_ag = partner_aging.iloc[0]
+            aging_data = {
+                "정상(0-30)": row_ag.get("정상(0-30)", 0),
+                "주의(31-60)": row_ag.get("주의(31-60)", 0),
+                "경고(61-90)": row_ag.get("경고(61-90)", 0),
+                "악성(91+)": row_ag.get("악성(91+)", 0),
+            }
+            if sum(aging_data.values()) > 0:
+                st.markdown("**현재 미수 구간**")
+                fig_ag = go.Figure(go.Pie(
+                    labels=list(aging_data.keys()),
+                    values=list(aging_data.values()),
+                    hole=0.45,
+                    marker_colors=["#4caf50", "#ffeb3b", "#ff9800", "#f44336"],
+                    textinfo="label+percent",
+                ))
+                fig_ag.update_layout(
+                    height=240, margin=dict(t=5, b=5),
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="white"), showlegend=False,
+                )
+                st.plotly_chart(fig_ag, use_container_width=True)
+
+    with col_info:
+        st.markdown("**과거 완결 결제패턴** (FIFO 기준)")
+        if not partner_pat.empty:
+            pr = partner_pat.iloc[0]
+            st.markdown(f"- 평균 결제일: **{pr['평균결제일']}일**")
+            st.markdown(f"- 권장 여신: **{pr['권장여신(일)']}일**")
+            st.markdown(f"- 30일 이내: {pr['30일이내(%)']:.0f}%")
+            st.markdown(f"- 31~60일: {pr['31-60일(%)']:.0f}%")
+            st.markdown(f"- 61~90일: {pr['61-90일(%)']:.0f}%")
+            st.markdown(f"- 91일+: {pr['91일이상(%)']:.0f}%")
         else:
-            icon, msg = "🟢", f"평균 {avg}일 정상"
-        st.markdown(f"{icon} **{row['거래처']}** — 평균 {avg}일, 권장여신 {rec}일 | {msg}")
+            st.info("완결된 채권 이력 없음")
+        st.markdown("")
+        st.markdown("**완결 DSO vs 미수 경과일 해석**")
+        c_dso = deep["completed_dso"]
+        w_age = deep["outstanding_weighted_age"]
+        if c_dso and w_age:
+            gap = w_age - c_dso
+            if gap > 60:
+                st.error(f"🔴 미수가 완결보다 {gap:.0f}일 더 오래됨 — 최근 결제 중단 가능성")
+            elif gap > 20:
+                st.warning(f"🟡 미수 경과일({w_age:.0f}일)이 완결DSO({c_dso:.0f}일)보다 길어지는 추세")
+            else:
+                st.success(f"🟢 완결DSO {c_dso:.0f}일 | 미수 경과 {w_age:.0f}일 — 정상 범위")
 else:
-    st.info("결제 패턴 데이터가 없습니다.")
+    st.info("거래처를 선택하면 발생/회수 추이와 DSO가 표시됩니다.")
 
 # ── 110 받을어음 잔액 모니터링 ────────────────────────────────────────────
 st.markdown("---")

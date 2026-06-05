@@ -401,6 +401,111 @@ def calc_payment_pattern(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def calc_partner_deep(df: pd.DataFrame, partner: str, as_of=None) -> dict:
+    """단일 거래처 심층 분석.
+
+    반환:
+        total_dr, total_cr, balance: 누계 발생/회수/잔액
+        completed_dso: FIFO 매칭된 완결 채권 평균 소요일
+        outstanding_weighted_age: 미수 잔액의 발생일 기준 가중평균 경과일
+        oldest_age: 가장 오래된 미수 발생일 경과일
+        monthly_dr: 월별 발생 dict {ym: amount}
+        monthly_cr: 월별 회수 dict {ym: amount}
+        monthly_balance: 월말잔액 dict {ym: balance}
+        avg_balance: 월평균 잔액
+        has_correction: 정정전표 여부
+    """
+    if as_of is None:
+        dates = pd.to_datetime(df["전표일자"], errors="coerce").dropna()
+        as_of = dates.max().date() if not dates.empty else date.today()
+    as_of_ts = pd.Timestamp(as_of)
+
+    df = _fill_ar_partner(df)
+    ar_df = df[
+        (df["계정코드"].astype(str).str.startswith("108")) &
+        (df["거래처"].astype(str) == str(partner))
+    ].copy()
+    ar_df["전표일자"] = pd.to_datetime(ar_df["전표일자"], errors="coerce")
+    ar_df = ar_df.dropna(subset=["전표일자"])
+
+    if ar_df.empty:
+        return {
+            "total_dr": 0, "total_cr": 0, "balance": 0,
+            "completed_dso": None, "outstanding_weighted_age": 0, "oldest_age": 0,
+            "monthly_dr": {}, "monthly_cr": {}, "monthly_balance": {}, "avg_balance": 0,
+            "has_correction": False,
+        }
+
+    debits = ar_df[ar_df["차변"] > 0].sort_values("전표일자")
+    credits, has_correction = _merge_corrections(debits, ar_df)
+
+    total_dr = float(debits["차변"].sum())
+    total_cr = float(credits["대변"].sum())
+    balance = max(total_dr - total_cr, 0)
+
+    # FIFO 매칭 → 완결 채권 소요일
+    open_items = [[row["전표일자"], row["차변"]] for _, row in debits.iterrows()]
+    completed_pairs = []  # (days, amount)
+
+    for _, crow in credits.iterrows():
+        remaining = crow["대변"]
+        for item in open_items:
+            if remaining <= 0:
+                break
+            applied = min(item[1], remaining)
+            if applied > 0:
+                days = (crow["전표일자"] - item[0]).days
+                if days >= 0:
+                    completed_pairs.append((days, applied))
+            item[1] -= applied
+            remaining -= applied
+
+    completed_dso = (
+        sum(d * a for d, a in completed_pairs) / sum(a for _, a in completed_pairs)
+        if completed_pairs else None
+    )
+
+    # 미수 잔액 가중 경과일
+    outstanding = [(d, a) for d, a in open_items if a > 1]
+    if outstanding:
+        total_out = sum(a for _, a in outstanding)
+        weighted_age = sum((as_of_ts - d).days * a for d, a in outstanding) / total_out
+        oldest_age = max((as_of_ts - d).days for d, _ in outstanding)
+    else:
+        weighted_age = 0
+        oldest_age = 0
+
+    # 월별 발생/회수
+    ar_df["ym"] = ar_df["전표일자"].dt.strftime("%Y-%m")
+    monthly_dr = ar_df[ar_df["차변"] > 0].groupby("ym")["차변"].sum().to_dict()
+    monthly_cr = ar_df[ar_df["대변"] > 0].groupby("ym")["대변"].sum().to_dict()
+
+    # 월말 잔액 추이
+    all_ym = sorted(set(list(monthly_dr.keys()) + list(monthly_cr.keys())))
+    running_dr, running_cr = 0.0, 0.0
+    monthly_balance = {}
+    for ym in all_ym:
+        running_dr += monthly_dr.get(ym, 0)
+        running_cr += monthly_cr.get(ym, 0)
+        monthly_balance[ym] = max(running_dr - running_cr, 0)
+
+    avg_balance = sum(monthly_balance.values()) / len(monthly_balance) if monthly_balance else 0
+
+    return {
+        "total_dr": total_dr,
+        "total_cr": total_cr,
+        "balance": balance,
+        "completed_dso": completed_dso,
+        "outstanding_weighted_age": weighted_age,
+        "oldest_age": oldest_age,
+        "monthly_dr": monthly_dr,
+        "monthly_cr": monthly_cr,
+        "monthly_balance": monthly_balance,
+        "avg_balance": avg_balance,
+        "has_correction": has_correction,
+    }
+
+
 def calc_bills_receivable(df: pd.DataFrame) -> dict:
     """110(받을어음) 잔액 분석 — 어음수취 후 미현금화 리스크."""
     ar_df = df[df["계정코드"].astype(str).str.startswith("108")].copy()
