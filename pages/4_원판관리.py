@@ -116,10 +116,9 @@ st.subheader("💰 원판 단가 비교표")
 st.caption("원/㎡ · 원/평 동시 표시 | 10% 이상 변동 품목 ⚠️ 경보")
 
 def _calc_pyeong(row):
-    """원/평 = 원/m² ÷ 10.764 (유리업계: 평 = ft²). DB에 0이면 원_m2에서 환산."""
-    p = row.get("원_평", 0) or 0
-    if p > 0:
-        return p
+    """원/평 = 원/m² ÷ 10.764 (유리업계: 평 = ft²).
+    DB 원_평값을 신뢰하지 않고 항상 원_m2에서 계산 (col 인덱스 오류 대응).
+    """
     m2 = row.get("원_m2", 0) or 0
     return round(m2 / 10.764) if m2 > 0 else 0
 
