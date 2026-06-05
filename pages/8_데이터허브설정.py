@@ -502,55 +502,49 @@ with tab5:
                     "기말재고_매": 0, "기말재고_금액": 0}
             parse_log = []
 
-            # 1) 품목별재고현황 시트에서 당기입고/사용 추출
-            재고현황_sheet = next((s for s in sheets2 if "재고" in s and "현황" in s), None)
-            if 재고현황_sheet:
-                try:
-                    df_r = xl2.parse(재고현황_sheet, header=None)
-                    r2 = df_r.iloc[2].values  # 행2 = 합계 행
-                    auto["당기입고_매"]   = int(_safe_float(r2[5])) if len(r2) > 5 else 0
-                    auto["당기입고_금액"] = _safe_float(r2[9])      if len(r2) > 9 else 0
-                    auto["당기사용_매"]   = int(_safe_float(r2[10])) if len(r2) > 10 else 0
-                    auto["당기사용_금액"] = _safe_float(r2[14])      if len(r2) > 14 else 0
-                    parse_log.append(f"✅ 품목별재고현황: 입고 {auto['당기입고_매']:,}매 / 사용 {auto['당기사용_매']:,}매")
-                except Exception as e:
-                    parse_log.append(f"⚠️ 품목별재고현황 파싱 오류: {e}")
-            else:
-                # 거래처별입고현황 시트 대체 (row2 마지막 유효 월 컬럼)
-                입고현황 = next((s for s in sheets2 if "입고" in s), None)
-                사용현황 = next((s for s in sheets2 if "사용" in s), None)
-                if 입고현황:
-                    try:
-                        df_in = xl2.parse(입고현황, header=None)
-                        r2 = df_in.iloc[2].dropna().values
-                        auto["당기입고_매"] = int(_safe_float(r2[-1])) if len(r2) > 0 else 0
-                        parse_log.append(f"✅ 거래처별입고현황: 당기입고 {auto['당기입고_매']:,}매")
-                    except Exception as e:
-                        parse_log.append(f"⚠️ 입고현황 파싱 오류: {e}")
-                if 사용현황:
-                    try:
-                        df_us = xl2.parse(사용현황, header=None)
-                        r2 = df_us.iloc[2].dropna().values
-                        auto["당기사용_매"] = int(_safe_float(r2[-1])) if len(r2) > 0 else 0
-                        parse_log.append(f"✅ 거래처별사용량: 당기사용 {auto['당기사용_매']:,}매")
-                    except Exception as e:
-                        parse_log.append(f"⚠️ 사용량 파싱 오류: {e}")
+            # 원판매입.사용현황 시트: col2 고정, 행 인덱스 기반
+            # 행5=입고매, 9=입고금액, 10=사용매, 14=사용금액
+            # 행15=기초재고매, 19=기초재고금액, 20=기말재고매, 24=기말재고금액
+            ROW_MAP = {
+                "당기입고_매":   (5,  True),
+                "당기입고_금액": (9,  False),
+                "당기사용_매":   (10, True),
+                "당기사용_금액": (14, False),
+                "기초재고_매":   (15, True),
+                "기초재고_금액": (19, False),
+                "기말재고_매":   (20, True),
+                "기말재고_금액": (24, False),
+            }
 
-            # 2) (01) 시트에서 기초재고(전월말) 추출: 행2, col7
-            first_daily = next((s for s in sheets2 if s.strip() == "(01)"), None)
-            if first_daily:
-                try:
-                    df_d1 = xl2.parse(first_daily, header=None)
-                    r2 = df_d1.iloc[2].values
-                    auto["기초재고_매"] = int(_safe_float(r2[7])) if len(r2) > 7 else 0
-                    parse_log.append(f"✅ (01) 시트: 기초재고 {auto['기초재고_매']:,}매")
-                except Exception as e:
-                    parse_log.append(f"⚠️ (01) 시트 파싱 오류: {e}")
-
-            # 3) 기말재고 = 기초 + 입고 - 사용
-            auto["기말재고_매"] = max(
-                auto["기초재고_매"] + auto["당기입고_매"] - auto["당기사용_매"], 0
+            # 시트명 탐색: "매입" + "현황" 포함하는 시트 우선
+            summary_sh = next(
+                (s for s in sheets2 if "매입" in s and "현황" in s), None
             )
+            if summary_sh is None:
+                # 대체: 일별시트(숫자) / 기준 제외한 첫 비일별 시트
+                summary_sh = next(
+                    (s for s in sheets2
+                     if not s.startswith("(") and s not in ["기준"]), None
+                )
+
+            if summary_sh:
+                try:
+                    df_su = xl2.parse(summary_sh, header=None)
+                    col2 = df_su.iloc[:, 2]  # 모든 값은 컬럼2에 있음
+                    for key, (ridx, is_int) in ROW_MAP.items():
+                        if ridx < len(col2):
+                            v = _safe_float(col2.iloc[ridx])
+                            auto[key] = int(v) if is_int else round(v)
+                    parse_log.append(
+                        f"✅ {summary_sh}: "
+                        f"입고 {auto['당기입고_매']:,}매 / {auto['당기입고_금액']:,}원 | "
+                        f"사용 {auto['당기사용_매']:,}매 / {auto['당기사용_금액']:,}원 | "
+                        f"기초 {auto['기초재고_매']:,}매 | 기말 {auto['기말재고_매']:,}매"
+                    )
+                except Exception as e:
+                    parse_log.append(f"⚠️ {summary_sh} 파싱 오류: {e}")
+            else:
+                parse_log.append("⚠️ 요약 시트를 찾지 못했습니다.")
 
             # 결과 로그 표시
             for log in parse_log:
@@ -558,7 +552,7 @@ with tab5:
             if auto["당기입고_매"] > 0 or auto["기초재고_매"] > 0:
                 st.success("✅ 자동 추출 완료 — 숫자 확인 후 저장하세요.")
             else:
-                st.warning("⚠️ 자동 추출 값이 0 — 시트 구조가 다를 수 있습니다. 직접 입력해주세요.")
+                st.warning("⚠️ 추출값 0 — 직접 입력해주세요.")
 
             st.markdown("**수불 집계 확인 / 수정**")
             c1, c2 = st.columns(2)
