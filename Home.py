@@ -2,11 +2,12 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import json
+import calendar
 from datetime import date
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from core.db import load_journal, get_available_months, get_annual_dep
+from core.db import load_journal, load_journal_upto, get_available_months, get_annual_dep
 from core.metrics import calc_kpi, calc_health_score, apply_monthly_depreciation, fmt_krw
 from core.aging import calc_aging, calc_concentration
 
@@ -60,7 +61,12 @@ st.markdown(
     + ("　`최신 데이터`" if is_latest else ""),
 )
 
-# ── 데이터 로드 ───────────────────────────────────────────────────────────
+# ── 기준일 계산 ───────────────────────────────────────────────────────────
+_yr, _mo = int(selected_ym[:4]), int(selected_ym[5:7])
+_last_day = calendar.monthrange(_yr, _mo)[1]
+as_of_date = date(_yr, _mo, _last_day)
+
+# ── 데이터 로드 함수 ──────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def load_data(ym: str):
     df = load_journal(ym)
@@ -71,6 +77,51 @@ def load_data(ym: str):
     kpi = calc_kpi(df)
     return df, kpi
 
+
+@st.cache_data(ttl=3600)
+def load_ar_cumulative(ym: str) -> pd.DataFrame:
+    """FIFO 정확도를 위한 전체 누적 AR — 창업일~선택월 전체."""
+    df = load_journal_upto(ym)
+    if not df.empty and "계정그룹" not in df.columns:
+        df["계정그룹"] = df["계정코드"].astype(str).str[:1]
+    return df
+
+
+@st.cache_data(ttl=3600)
+def get_dep_cached(year: str) -> float:
+    return get_annual_dep(year)
+
+
+@st.cache_data(ttl=600)
+def load_recent_trend(month_list: list) -> pd.DataFrame:
+    """최근 N개월 KPI 추이 (최대 6개월)."""
+    rows = []
+    for ym in sorted(month_list[:6]):  # 오래된 순
+        df_m = load_journal(ym)
+        if df_m.empty:
+            continue
+        if "계정그룹" not in df_m.columns:
+            df_m["계정그룹"] = df_m["계정코드"].astype(str).str[:1]
+        k = calc_kpi(df_m)
+        annual_dep = get_dep_cached(ym[:4])
+        if annual_dep > 0:
+            k = apply_monthly_depreciation(k, annual_dep / 12)
+        비용분류 = k.get("비용대분류_v7", {})
+        총인건비_t = (k.get("인건비", 0)
+                    + 비용분류.get("퇴직급여", 0)
+                    + 비용분류.get("4대보험", 0)
+                    + 비용분류.get("복리후생", 0))
+        rows.append({
+            "ym": ym,
+            "label": f"{ym[2:4]}.{ym[5:7]}",
+            "매출액": k.get("매출액", 0),
+            "영업이익률": k.get("영업이익률_v7", k.get("영업이익률", 0)),
+            "총인건비율": (총인건비_t / k.get("매출액", 1) * 100) if k.get("매출액", 0) > 0 else 0,
+        })
+    return pd.DataFrame(rows)
+
+
+# ── 이달 데이터 로드 ──────────────────────────────────────────────────────
 with st.spinner("데이터 불러오는 중..."):
     df, kpi = load_data(selected_ym)
 
@@ -86,46 +137,68 @@ if idx < len(months) - 1:
     prev_ym = months[idx + 1]
     _, prev_kpi = load_data(prev_ym)
 
-# 건강점수 (이번달 AR 기준 — 홈 화면 빠른 표시용)
-aging_df = calc_aging(df)
+# ── 매출채권 AR — 전체 누적 로드 (정확도 우선) ────────────────────────────
+with st.spinner("매출채권 누적 데이터 분석 중..."):
+    ar_df = load_ar_cumulative(selected_ym)
+
+aging_df = calc_aging(ar_df, as_of=as_of_date) if not ar_df.empty else calc_aging(df)
 conc = calc_concentration(aging_df)
 kpi["상위5집중도"] = conc["상위5집중도"]
+
 if prev_kpi and prev_ym:
-    prev_df, _ = load_data(prev_ym)  # 캐시됨, 재요청 비용 없음
-    prev_aging = calc_aging(prev_df)
+    prev_yr, prev_mo = int(prev_ym[:4]), int(prev_ym[5:7])
+    prev_last = calendar.monthrange(prev_yr, prev_mo)[1]
+    prev_as_of = date(prev_yr, prev_mo, prev_last)
+    prev_ar_df = load_ar_cumulative(prev_ym)
+    prev_aging = calc_aging(prev_ar_df, as_of=prev_as_of) if not prev_ar_df.empty else calc_aging(load_data(prev_ym)[0])
     prev_conc = calc_concentration(prev_aging)
     prev_kpi["상위5집중도"] = prev_conc["상위5집중도"]
 
-# 감가상각 ÷12 자동 적용 (tax_journal > 직원분개장 12월 자동추출)
-@st.cache_data(ttl=3600)
-def get_dep_cached(year: str) -> float:
-    return get_annual_dep(year)
-
+# ── 감가상각 월배분 ──────────────────────────────────────────────────────
 annual_dep = get_dep_cached(selected_ym[:4])
 if annual_dep > 0:
     monthly_dep = annual_dep / 12
     kpi = apply_monthly_depreciation(kpi, monthly_dep)
     if prev_kpi:
-        prev_year = prev_ym[:4] if prev_ym else selected_ym[:4]
-        prev_annual_dep = get_dep_cached(prev_year)
+        prev_annual_dep = get_dep_cached(prev_ym[:4] if prev_ym else selected_ym[:4])
         if prev_annual_dep > 0:
             prev_kpi = apply_monthly_depreciation(prev_kpi, prev_annual_dep / 12)
 
-health = calc_health_score(kpi, prev_kpi)
+# ── 인건비성 비용 세분화 ──────────────────────────────────────────────────
+비용분류_v7 = kpi.get("비용대분류_v7", {})
+인건비 = kpi.get("인건비", 0)                         # 실급여만
+퇴직급여 = 비용분류_v7.get("퇴직급여", 0)
+사대보험 = 비용분류_v7.get("4대보험", 0)
+복리후생 = 비용분류_v7.get("복리후생", 0)
+퇴직보험복리 = 퇴직급여 + 사대보험 + 복리후생
+총인건비 = 인건비 + 퇴직보험복리
+대손상각 = 비용분류_v7.get("대손상각", 0)
 
+# 기타운영비 = 인건비성 모두 제외한 나머지
+기타운영비 = kpi.get("운영비_기타", kpi.get("총비용", 0)) - 총인건비
+
+# ── 이달 손익 지표 ────────────────────────────────────────────────────────
 매출액 = kpi.get("매출액", 0)
 영업이익_v7 = kpi.get("영업이익_v7", kpi.get("영업이익", 0))
 영업이익률_v7 = kpi.get("영업이익률_v7", kpi.get("영업이익률", 0))
 이자비용 = kpi.get("이자비용", 0)
 자산처분손실 = kpi.get("자산처분손실", 0)
-영업외수익 = kpi.get("영업외수익", 0)
 영업외수익_반복 = kpi.get("영업외수익_반복", 0)
 영업외수익_일회성 = kpi.get("영업외수익_일회성", 0)
 실질이익 = kpi.get("실질이익", 영업이익_v7 - 이자비용)
 원재료순 = kpi.get("원재료순", kpi.get("원재료", 0))
 부재료매입 = kpi.get("부재료매입", kpi.get("부재료", 0))
-인건비 = kpi.get("인건비", 0)
-기타운영비 = kpi.get("운영비_기타", kpi.get("총비용", 0)) - 인건비
+
+# ── 자금경색 자동 계산 ────────────────────────────────────────────────────
+# 이달 보통예금(103) 입금 총액 = 현금 유입 근사치
+cash_103 = df[df["계정코드"].astype(str) == "103"]
+월중입금 = cash_103["차변"].sum()
+예상고정비 = 총인건비 + 이자비용   # 급여+퇴직+4대보험+이자 = 최소 고정 지출
+
+cash_data = {"월중입금": 월중입금, "예상고정비": 예상고정비}
+
+# ── 건강점수 계산 ─────────────────────────────────────────────────────────
+health = calc_health_score(kpi, prev_kpi, cash_data=cash_data)
 
 # ── 헤더 ──────────────────────────────────────────────────────────────────
 st.markdown("---")
@@ -191,41 +264,99 @@ st.subheader(f"📊 {selected_ym[:4]}년 {selected_ym[5:7]}월 손익")
 def pct_str(v):
     return f"{v / 매출액 * 100:.1f}%" if 매출액 > 0 else "—"
 
-def fmt_억(v):
-    return fmt_krw(v)
-
 pl_rows = []
-pl_rows.append({"항목": "매출액", "금액": fmt_억(매출액), "매출대비": "100%"})
-pl_rows.append({"항목": "원재료매입 (*)", "금액": f"−{fmt_억(원재료순)}", "매출대비": pct_str(원재료순)})
-pl_rows.append({"항목": "부재료매입", "금액": f"−{fmt_억(부재료매입)}", "매출대비": pct_str(부재료매입)})
-pl_rows.append({"항목": "인건비", "금액": f"−{fmt_억(인건비)}", "매출대비": pct_str(인건비)})
-pl_rows.append({"항목": "기타운영비", "금액": f"−{fmt_억(기타운영비)}", "매출대비": pct_str(기타운영비)})
+pl_rows.append({"항목": "매출액", "금액": fmt_krw(매출액), "매출대비": "100%"})
+pl_rows.append({"항목": "원재료매입 (*)", "금액": f"−{fmt_krw(원재료순)}", "매출대비": pct_str(원재료순)})
+pl_rows.append({"항목": "부재료매입", "금액": f"−{fmt_krw(부재료매입)}", "매출대비": pct_str(부재료매입)})
+pl_rows.append({"항목": "인건비 (실급여)", "금액": f"−{fmt_krw(인건비)}", "매출대비": pct_str(인건비)})
+if 퇴직보험복리 > 0:
+    pl_rows.append({"항목": "퇴직·보험·복리", "금액": f"−{fmt_krw(퇴직보험복리)}", "매출대비": pct_str(퇴직보험복리)})
+pl_rows.append({"항목": "기타운영비", "금액": f"−{fmt_krw(기타운영비)}", "매출대비": pct_str(기타운영비)})
 
 margin_diff_str = ""
 if prev_kpi:
-    diff = 영업이익률_v7 - prev_kpi.get("영업이익률_v7", prev_kpi["영업이익률"])
+    diff = 영업이익률_v7 - prev_kpi.get("영업이익률_v7", prev_kpi.get("영업이익률", 0))
     margin_diff_str = f"전월비 {diff:+.1f}%p"
 dep_월 = kpi.get("감가상각_월", 0)
 if dep_월 > 0:
-    pl_rows.append({"항목": "감가상각비 (월배분)", "금액": f"−{fmt_억(dep_월)}", "매출대비": pct_str(dep_월)})
-pl_rows.append({"항목": "── 영업이익 ──", "금액": fmt_억(영업이익_v7), "매출대비": pct_str(영업이익_v7) + (f"  ({margin_diff_str})" if margin_diff_str else "")})
+    pl_rows.append({"항목": "감가상각비 (월배분)", "금액": f"−{fmt_krw(dep_월)}", "매출대비": pct_str(dep_월)})
+pl_rows.append({"항목": "── 영업이익 ──", "금액": fmt_krw(영업이익_v7),
+                "매출대비": pct_str(영업이익_v7) + (f"  ({margin_diff_str})" if margin_diff_str else "")})
 if 영업외수익_반복 > 0:
-    pl_rows.append({"항목": "영업외수익 (이자수익)", "금액": f"+{fmt_억(영업외수익_반복)}", "매출대비": pct_str(영업외수익_반복)})
+    pl_rows.append({"항목": "영업외수익 (이자수익)", "금액": f"+{fmt_krw(영업외수익_반복)}", "매출대비": pct_str(영업외수익_반복)})
 if 영업외수익_일회성 > 0:
-    pl_rows.append({"항목": "영업외수익 (일회성)", "금액": f"+{fmt_억(영업외수익_일회성)}", "매출대비": pct_str(영업외수익_일회성)})
-pl_rows.append({"항목": "이자비용", "금액": f"−{fmt_억(이자비용)}", "매출대비": pct_str(이자비용)})
+    pl_rows.append({"항목": "영업외수익 (일회성)", "금액": f"+{fmt_krw(영업외수익_일회성)}", "매출대비": pct_str(영업외수익_일회성)})
+pl_rows.append({"항목": "이자비용", "금액": f"−{fmt_krw(이자비용)}", "매출대비": pct_str(이자비용)})
 if 자산처분손실 > 0:
-    pl_rows.append({"항목": "일회성손익 (처분)", "금액": f"−{fmt_억(자산처분손실)}", "매출대비": pct_str(자산처분손실)})
-pl_rows.append({"항목": "── 실질이익 ──", "금액": fmt_억(실질이익), "매출대비": pct_str(실질이익)})
+    pl_rows.append({"항목": "일회성손익 (처분)", "금액": f"−{fmt_krw(자산처분손실)}", "매출대비": pct_str(자산처분손실)})
+pl_rows.append({"항목": "── 실질이익 ──", "금액": fmt_krw(실질이익), "매출대비": pct_str(실질이익)})
 
-st.dataframe(pd.DataFrame(pl_rows), use_container_width=True, hide_index=True, height=315)
-st.caption("(*) 원재료매입은 이달 매입 기준 — 재고 반영 전. 연말 회계 대체(Code 455)는 제외.")
+st.dataframe(pd.DataFrame(pl_rows), use_container_width=True, hide_index=True, height=350)
+st.caption("(*) 원재료매입은 이달 매입 기준. 연말 회계 대체(Code 455) 제외.")
+
+# ── 최근 6개월 추이 ──────────────────────────────────────────────────────
+st.markdown("---")
+st.subheader("📈 최근 6개월 추이")
+
+trend_df = load_recent_trend(months)
+if not trend_df.empty and len(trend_df) >= 2:
+    fig_trend = go.Figure()
+    # 매출액 바차트 (왼쪽 Y)
+    fig_trend.add_trace(go.Bar(
+        name="매출액",
+        x=trend_df["label"],
+        y=trend_df["매출액"] / 1e6,
+        marker_color="#60a5fa",
+        opacity=0.8,
+        text=(trend_df["매출액"] / 1e6).apply(lambda v: f"{v:.0f}"),
+        textposition="outside",
+        yaxis="y",
+    ))
+    # 영업이익률 꺾은선 (오른쪽 Y)
+    line_color = "#34d399"
+    fig_trend.add_trace(go.Scatter(
+        name="영업이익률",
+        x=trend_df["label"],
+        y=trend_df["영업이익률"],
+        mode="lines+markers+text",
+        line=dict(color=line_color, width=2),
+        marker=dict(size=7),
+        text=trend_df["영업이익률"].apply(lambda v: f"{v:.1f}%"),
+        textposition="top center",
+        textfont=dict(size=10, color=line_color),
+        yaxis="y2",
+    ))
+    # 총인건비율 꺾은선 (오른쪽 Y)
+    fig_trend.add_trace(go.Scatter(
+        name="총인건비율",
+        x=trend_df["label"],
+        y=trend_df["총인건비율"],
+        mode="lines+markers",
+        line=dict(color="#f87171", width=2, dash="dot"),
+        marker=dict(size=6),
+        yaxis="y2",
+    ))
+    fig_trend.update_layout(
+        yaxis=dict(title="매출액 (백만원)", tickformat=",.0f"),
+        yaxis2=dict(title="%", overlaying="y", side="right",
+                    ticksuffix="%", range=[-20, max(40, trend_df["총인건비율"].max() + 5)]),
+        height=300,
+        margin=dict(t=20, b=30),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="white"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        barmode="group",
+    )
+    st.plotly_chart(fig_trend, use_container_width=True)
+    st.caption("파란 막대=매출액(백만원) | 초록선=영업이익률% | 빨간점선=총인건비율%")
+else:
+    st.info("최소 2개월 데이터 필요")
 
 # ── 비용 구조 도넛 + 항목별 금액 ─────────────────────────────────────────
 st.markdown("---")
 col_pie, col_bar = st.columns([1, 1])
 
-cost_display = dict(kpi["비용대분류_v7"])
+cost_display = dict(비용분류_v7)
 if 원재료순 > 0:
     cost_display["원재료매입"] = 원재료순
 if 부재료매입 > 0:
@@ -271,12 +402,13 @@ with col_bar:
                 unsafe_allow_html=True,
             )
 
-# ── 매출채권 현황 (이번달 기준 간략 표시) ─────────────────────────────────
+# ── 매출채권 현황 (누적 기준) + 거래처별 매출 ─────────────────────────────
 st.markdown("---")
 col_ar, col_rev = st.columns([1, 1])
 
 with col_ar:
     st.subheader("📋 매출채권 현황")
+    st.caption("창업일~선택월 전체 누적 기준 FIFO")
     if not aging_df.empty:
         def risk_badge(row):
             if row["악성(91+)"] > 0: return "🔴 위험"
@@ -284,16 +416,16 @@ with col_ar:
             if row["주의(31-60)"] > 0: return "🟡 주의"
             return "🟢 정상"
 
-        top_ar = aging_df.head(8).copy()
+        top_ar = aging_df.sort_values("잔액", ascending=False).head(8).copy()
         top_ar["위험도"] = top_ar.apply(risk_badge, axis=1)
         top_ar["잔액"] = top_ar["잔액"].apply(lambda v: f"{v/1e6:.1f}백만")
         st.dataframe(
             top_ar[["거래처", "잔액", "위험도"]],
             use_container_width=True, hide_index=True, height=300,
         )
-        st.caption(f"총 미수금: {conc['총잔액']/1e6:.0f}백만원 | 누적 정밀 분석 → 매출채권관리 페이지")
+        st.caption(f"총 미수금: {conc['총잔액']/1e6:.0f}백만원 | 정밀 분석 → 매출채권관리 페이지")
     else:
-        st.info("이달 매출채권 데이터 없음")
+        st.info("매출채권 데이터 없음")
 
 with col_rev:
     st.subheader("📈 거래처별 매출")
@@ -332,20 +464,41 @@ st.markdown("---")
 st.subheader("📋 다음 달 챙길 일")
 
 actions = []
+
+# 영업 적자
 if 영업이익_v7 < 0:
-    actions.append(f"🚨 **영업 적자 {abs(영업이익_v7)/1e6:.0f}백만원** — 비용구조 긴급 점검 (원가비용통제 페이지)")
+    actions.append(f"🚨 **영업 적자 {abs(영업이익_v7)/1e6:.0f}백만원** — 비용구조 긴급 점검 (손익분석 페이지)")
 elif prev_kpi:
-    diff = 영업이익률_v7 - prev_kpi.get("영업이익률_v7", prev_kpi["영업이익률"])
+    diff = 영업이익률_v7 - prev_kpi.get("영업이익률_v7", prev_kpi.get("영업이익률", 0))
     if diff < -2:
         actions.append(f"⚠️ 영업이익률 전월비 {diff:+.1f}%p 하락 — 원인 파악 필요")
+
+# 총인건비율 경보 (35% 초과 시)
+if 매출액 > 0:
+    총인건비율 = 총인건비 / 매출액 * 100
+    if 총인건비율 >= 38:
+        actions.append(f"🚨 총 인건비성 비용 **{총인건비율:.1f}%** — 매출 대비 위험 수준 (인건비+퇴직+4대보험)")
+    elif 총인건비율 >= 33:
+        actions.append(f"⚠️ 총 인건비성 비용 {총인건비율:.1f}% — 주의 수준 ({fmt_krw(총인건비)})")
+
+# 대손상각 발생
+if 대손상각 > 0:
+    actions.append(f"⚠️ 이달 대손상각비 **{fmt_krw(대손상각)}** 발생 — 해당 거래처 미수금 대조 필요")
+
+# 악성 미수금
 if not aging_df.empty and aging_df["악성(91+)"].sum() > 0:
     악성금액 = aging_df["악성(91+)"].sum()
     악성업체 = aging_df[aging_df["악성(91+)"] > 0].iloc[0]["거래처"]
     actions.append(f"🚨 악성 미수금 **{악성금액/1e6:.0f}백만원** ({악성업체} 등) — 즉시 회수 연락")
+
+# 집중도
 if conc["상위5집중도"] >= 50:
     actions.append(f"⚠️ 매출채권 집중도 {conc['상위5집중도']:.1f}% — 거래처 분산 검토")
+
+# 이자비용
 if 이자비용 > 0:
     actions.append(f"💰 이자비용 {이자비용/1e4:.0f}만원/월 — 부채이자관리 페이지 확인")
+
 if not actions:
     actions.append("✅ 특별한 긴급 항목 없음 — 정기 모니터링 유지")
 for a in actions:
@@ -363,10 +516,13 @@ export_data = {
         "매출액_억": round(매출액 / 1e8, 2),
         "원재료매입_억": round(원재료순 / 1e8, 2),
         "부재료매입_억": round(부재료매입 / 1e8, 2),
-        "인건비_억": round(인건비 / 1e8, 2),
+        "인건비_실급여_억": round(인건비 / 1e8, 2),
+        "퇴직보험복리_억": round(퇴직보험복리 / 1e8, 2),
+        "총인건비_억": round(총인건비 / 1e8, 2),
         "기타운영비_억": round(기타운영비 / 1e8, 2),
         "영업이익_억": round(영업이익_v7 / 1e8, 2),
         "영업이익률": f"{영업이익률_v7:.1f}%",
+        "총인건비율": f"{(총인건비/매출액*100) if 매출액 > 0 else 0:.1f}%",
         "이자비용_억": round(이자비용 / 1e8, 2),
         "실질이익_억": round(실질이익 / 1e8, 2),
     },
@@ -390,7 +546,7 @@ export_data = {
                 "잔액_백만": round(r["잔액"] / 1e6, 1),
                 "악성91일이상_백만": round(r.get("악성(91+)", 0) / 1e6, 1),
             }
-            for r in aging_df.head(10).to_dict("records")
+            for r in aging_df.sort_values("잔액", ascending=False).head(10).to_dict("records")
         ] if not aging_df.empty else [],
     },
 }

@@ -6,7 +6,8 @@ import calendar
 from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from core.db import load_journal_upto, get_available_months, load_master_blacklist
+from core.db import (load_journal_upto, get_available_months, load_master_blacklist,
+                     is_erp_ar_verified, set_erp_ar_verified)
 from core.aging import (calc_aging, calc_ar_summary, calc_concentration,
                         calc_overdue_ratio, extract_ar_collections,
                         calc_payment_pattern, calc_bills_receivable)
@@ -27,12 +28,26 @@ if not st.session_state.get("authenticated"):
 st.title("📋 매출채권 · 여신 집중 관리")
 st.caption("외상매출금(108) — 창업일부터 선택월 말일까지 전체 누적 이력 기준 FIFO 연령분석")
 
-# ── ERP 대조 전 신뢰도 안내 ────────────────────────────────────────────────
-st.warning(
-    "⚠️ **ERP 미수금 대조 전** — "
-    "정정전표(차변 음수) 처리 후 잔액·회수율·DSO는 참고용입니다. "
-    "마지막입금일·경과일·거래단절 여부는 신뢰 가능합니다."
-)
+# ── ERP 대조 신뢰도 안내 ────────────────────────────────────────────────
+_erp_verified = is_erp_ar_verified()
+
+if not _erp_verified:
+    col_warn, col_btn = st.columns([4, 1])
+    col_warn.warning(
+        "⚠️ **ERP 미수금 대조 전** — "
+        "잔액·회수율·DSO는 참고용입니다. "
+        "마지막입금일·경과일은 신뢰 가능."
+    )
+    if col_btn.button("✅ ERP 대조 완료", type="primary"):
+        set_erp_ar_verified(True)
+        st.success("ERP 대조 완료로 표시했습니다.")
+        st.rerun()
+else:
+    col_info, col_reset = st.columns([4, 1])
+    col_info.success("✅ ERP 미수금 대조 완료 — 수치 신뢰 가능")
+    if col_reset.button("↩ 대조 취소"):
+        set_erp_ar_verified(False)
+        st.rerun()
 
 months = get_available_months()
 if not months:

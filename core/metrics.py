@@ -323,12 +323,14 @@ def calc_health_score(
     current: dict,
     prev: Optional[dict] = None,
     prev_prev: Optional[dict] = None,
+    cash_data: Optional[dict] = None,
 ) -> dict:
     """건강점수 100점 + 4대 리스크 (CLAUDE.md §12 수정 기준).
 
     - 영업이익률 < 0: 무조건 -25점 + 총점 70점 상한
     - 전월 대비 하락: -7점
     - 3개월 연속 하락: -3점 추가 (prev_prev 제공 시)
+    - cash_data: {"월중입금": float, "예상고정비": float} — 자금경색 자동계산
     """
     if prev is None:
         return {
@@ -388,9 +390,26 @@ def calc_health_score(
     scores["대손결운"] = max(0, ar_score)
     reasons["대손결운"] = ar_reason if ar_reason != "정상" else "악성미수 비중 전월 수준"
 
-    # 3. 자금경색 (20점)
-    scores["자금경색"] = 20
-    reasons["자금경색"] = "현금 데이터 수동 입력 필요"
+    # 3. 자금경색 (20점) — cash_data 제공 시 자동 계산
+    if cash_data and cash_data.get("예상고정비", 0) > 0:
+        월중입금 = cash_data.get("월중입금", 0)
+        예상고정비 = cash_data["예상고정비"]
+        if 월중입금 <= 0:
+            cash_score, cash_reason = 5, "이달 입금 데이터 없음"
+        elif 월중입금 < 예상고정비:
+            cash_score = 2
+            ratio = 월중입금 / 예상고정비 * 100
+            cash_reason = f"입금({월중입금/1e4:.0f}만원) < 고정비({예상고정비/1e4:.0f}만원) — {ratio:.0f}% 수준"
+        elif 월중입금 < 예상고정비 * 1.5:
+            cash_score = 12
+            cash_reason = f"입금 여유 1개월 이내 ({월중입금/1e4:.0f}만원 / 고정비 {예상고정비/1e4:.0f}만원)"
+        else:
+            cash_score = 20
+            cash_reason = f"입금 대비 고정비 여유 ({월중입금/예상고정비:.1f}배)"
+    else:
+        cash_score, cash_reason = 20, "현금 데이터 수동 입력 필요"
+    scores["자금경색"] = max(0, cash_score)
+    reasons["자금경색"] = cash_reason
 
     # 4. 집중리스크 (20점)
     conc = current.get("상위5집중도", 51.5)

@@ -178,6 +178,34 @@ def load_monthly_summary() -> pd.DataFrame:
     return pd.DataFrame(res.data)
 
 
+def is_erp_ar_verified() -> bool:
+    """ERP 미수금 대조 완료 여부 반환."""
+    client = get_client()
+    try:
+        res = (client.table("master_settings")
+               .select("key")
+               .eq("type", "erp_verified")
+               .eq("key", "ar")
+               .execute())
+        return bool(res.data)
+    except Exception:
+        return False
+
+
+def set_erp_ar_verified(verified: bool) -> None:
+    """ERP 미수금 대조 완료 플래그 설정/해제."""
+    client = get_client()
+    try:
+        if verified:
+            client.table("master_settings").upsert(
+                {"type": "erp_verified", "key": "ar"}
+            ).execute()
+        else:
+            client.table("master_settings").delete().eq("type", "erp_verified").eq("key", "ar").execute()
+    except Exception:
+        pass
+
+
 def load_master_blacklist() -> list[str]:
     client = get_client()
     res = (client.table("master_settings")
