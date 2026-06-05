@@ -10,6 +10,16 @@ from core.db import (
 )
 from core.metrics import fmt_krw
 
+# 거래처 색상 팔레트 (전역)
+VENDOR_PALETTE = [
+    "#60a5fa",  # 파란색  (KCC)
+    "#34d399",  # 녹색   (LX)
+    "#fbbf24",  # 노란색 (한유)
+    "#f87171",  # 빨간색 (한성)
+    "#a78bfa",  # 보라색 (KGT)
+    "#fb923c",  # 주황색
+]
+
 st.set_page_config(page_title="원판 관리", page_icon="🪟", layout="wide")
 
 if not st.session_state.get("authenticated"):
@@ -144,15 +154,6 @@ else:
             .groupby("두께")["원_m2"].mean().reset_index()
         )
 
-        # 거래처명 부분 매칭으로 색상 결정
-        VENDOR_PALETTE = [
-            "#60a5fa",  # 파란색
-            "#34d399",  # 녹색
-            "#fbbf24",  # 노란색
-            "#f87171",  # 빨간색
-            "#a78bfa",  # 보라색
-            "#fb923c",  # 주황색
-        ]
         vendors_sorted = sorted(avg_by_thick["거래처"].unique()) if "거래처" in avg_by_thick.columns else []
         vendor_color = {v: VENDOR_PALETTE[i % len(VENDOR_PALETTE)]
                         for i, v in enumerate(vendors_sorted)}
@@ -196,6 +197,113 @@ else:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         )
         st.plotly_chart(fig, use_container_width=True)
+
+# ── 월별 단가 추이 (꺾은선) ───────────────────────────────────────────────
+st.markdown("---")
+st.subheader("📈 월별 단가 추이 (원/㎡)")
+st.caption("거래처별 월평균 단가 변화 — 가격 상승/하락 추적")
+
+if not all_price_df.empty and "원_m2" in all_price_df.columns:
+    trend_years = sorted(
+        all_price_df["year"].astype(str).unique(), reverse=True
+    ) if "year" in all_price_df.columns else []
+
+    if trend_years:
+        tcol1, tcol2 = st.columns([1, 2])
+        sel_trend_year = tcol1.selectbox("연도", trend_years, index=0, key="trend_year")
+
+        # 두께 필터
+        thick_vals = sorted([
+            int(v) for v in all_price_df["두께"].dropna().unique()
+            if str(v).replace(".0", "").isdigit()
+        ]) if "두께" in all_price_df.columns else []
+        thick_filter_opts = ["전체"] + [f"{t}mm" for t in thick_vals]
+        sel_trend_thick = tcol2.selectbox("두께 필터", thick_filter_opts, index=0, key="trend_thick")
+
+        # 해당 연도 데이터 필터
+        trend_df = all_price_df[
+            (all_price_df["year"].astype(str) == sel_trend_year) &
+            (all_price_df["원_m2"] > 0)
+        ].copy()
+
+        if sel_trend_thick != "전체":
+            t_val = int(sel_trend_thick.replace("mm", ""))
+            if "두께" in trend_df.columns:
+                trend_df = trend_df[trend_df["두께"] == t_val]
+
+        if trend_df.empty:
+            st.info(f"{sel_trend_year}년 단가 데이터 없음")
+        else:
+            # 월 + 거래처별 평균 원/m2
+            if "month" in trend_df.columns and "거래처" in trend_df.columns:
+                monthly_avg = (
+                    trend_df.groupby(["month", "거래처"])["원_m2"]
+                    .mean()
+                    .reset_index()
+                )
+                monthly_avg["month_int"] = monthly_avg["month"].astype(str).str.zfill(2).astype(int)
+                monthly_avg = monthly_avg.sort_values("month_int")
+                monthly_avg["월"] = monthly_avg["month_int"].apply(lambda m: f"{m:02d}월")
+
+                vendors_trend = sorted(monthly_avg["거래처"].unique())
+                vendor_color_t = {v: VENDOR_PALETTE[i % len(VENDOR_PALETTE)]
+                                  for i, v in enumerate(sorted(
+                                      all_price_df["거래처"].unique() if "거래처" in all_price_df.columns else []
+                                  ))}
+
+                fig_trend = go.Figure()
+                for vendor in vendors_trend:
+                    sub = monthly_avg[monthly_avg["거래처"] == vendor].sort_values("month_int")
+                    if sub.empty:
+                        continue
+                    color = vendor_color_t.get(vendor, "#94a3b8")
+                    fig_trend.add_trace(go.Scatter(
+                        x=sub["월"],
+                        y=sub["원_m2"],
+                        mode="lines+markers+text",
+                        name=vendor,
+                        line=dict(color=color, width=2),
+                        marker=dict(size=8, color=color),
+                        text=sub["원_m2"].apply(lambda v: f"{v:,.0f}"),
+                        textposition="top center",
+                        textfont=dict(size=10),
+                    ))
+
+                thick_label = f" ({sel_trend_thick})" if sel_trend_thick != "전체" else " (전 두께 평균)"
+                fig_trend.update_layout(
+                    title=dict(
+                        text=f"{sel_trend_year}년 월별 원/㎡ 단가 추이{thick_label}",
+                        font=dict(size=14, color="white"),
+                        x=0,
+                    ),
+                    xaxis_title="월",
+                    yaxis=dict(
+                        title="원/㎡",
+                        tickformat=",.0f",
+                        ticksuffix="원",
+                    ),
+                    height=420,
+                    margin=dict(t=50, b=40, l=20, r=20),
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="white"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="left", x=0),
+                    hovermode="x unified",
+                )
+                st.plotly_chart(fig_trend, use_container_width=True)
+
+                # 전월 대비 변동 표
+                if len(monthly_avg["월"].unique()) >= 2:
+                    st.markdown("**월별 단가 변동 요약**")
+                    pivot = monthly_avg.pivot(index="거래처", columns="월", values="원_m2")
+                    cols_sorted = sorted(pivot.columns, key=lambda x: int(x.replace("월", "")))
+                    pivot = pivot[cols_sorted]
+                    # 서식 적용
+                    pivot_disp = pivot.applymap(lambda v: f"{v:,.0f}원" if pd.notna(v) else "—")
+                    st.dataframe(pivot_disp, use_container_width=True)
+    else:
+        st.info("단가 데이터 없음")
+else:
+    st.info("구매내역 데이터 없음 — 데이터 허브에서 업로드 후 확인하세요.")
 
 # ── 연간 탭: 거래처별 월별 매입금액 ──────────────────────────────────────
 st.markdown("---")
