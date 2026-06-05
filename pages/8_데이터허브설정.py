@@ -307,15 +307,35 @@ with tab5:
             return m.group(1), m.group(2)
         return "", ""
 
+    def _safe_float(val, default=0.0) -> float:
+        """NaN 포함 모든 값을 안전하게 float로 변환."""
+        if val is None:
+            return default
+        try:
+            f = float(val)
+            return default if (f != f) else f  # NaN check: NaN != NaN
+        except (ValueError, TypeError):
+            return default
+
+    def _safe_int(val) -> int | None:
+        """NaN/None/비정상값을 None으로, 정상값만 int로 변환."""
+        f = _safe_float(val, float("nan"))
+        if f != f:  # NaN
+            return None
+        try:
+            return int(f)
+        except (ValueError, TypeError):
+            return None
+
     def _calc_unit_price(row) -> dict:
         """단가 계산: 면적(m²) 기반 원/㎡, 원/평."""
         try:
-            w = float(row.get("가로", 0) or row.get("폭", 0) or 0)
-            h = float(row.get("세로", 0) or row.get("길이", 0) or 0)
-            qty = float(row.get("매수", 0) or row.get("수량", 0) or 1)
-            amt = float(row.get("금액", 0) or row.get("공급가액", 0) or 0)
+            w = _safe_float(row.get("가로") or row.get("폭"))
+            h = _safe_float(row.get("세로") or row.get("길이"))
+            qty = _safe_float(row.get("매수") or row.get("수량"), 1.0)
+            amt = _safe_float(row.get("금액") or row.get("공급가액"))
 
-            # mm → m 변환 (1000 초과면 mm 단위로 가정)
+            # mm → m 변환 (10 초과면 mm 단위로 가정)
             if w > 10:
                 w /= 1000
             if h > 10:
@@ -365,24 +385,28 @@ with tab5:
                     if "원산지" in df_s.columns:
                         df_s = df_s[~df_s["원산지"].astype(str).str.contains("원산지", na=False)]
 
+                    # 거래처 시트에 해당하는 것만 처리 (Summary/수불용/기준 시트 제외)
+                    SKIP_SHEETS = {"summary", "summay", "수불용", "기준"}
+                    if sheet.lower().replace("_", "").replace(" ", "") in SKIP_SHEETS or \
+                       any(k in sheet.lower() for k in ["summary", "summay", "수불", "기준"]):
+                        continue
+
                     # 단가 계산
                     for _, r in df_s.iterrows():
                         price_calc = _calc_unit_price(r)
                         row_data = {
                             "year": inp_year, "month": inp_month,
                             "거래처": sheet,
-                            "원산지": str(r.get("원산지", "")).strip() if "원산지" in df_s.columns else "",
-                            "제품": str(r.get("제품", r.get("품명", ""))).strip(),
-                            "두께": int(float(r.get("두께", 0) or 0)) if r.get("두께") else None,
-                            "규격mm": str(r.get("규격", r.get("규격(mm)", ""))).strip(),
-                            "규격자": str(r.get("규격(자)", r.get("자수", ""))).strip(),
-                            "일자": str(r.get("일자", r.get("날짜", ""))).strip(),
+                            "원산지": str(r.get("원산지", "") or "").strip() if "원산지" in df_s.columns else "",
+                            "제품": str(r.get("제품") or r.get("품명") or "").strip(),
+                            "두께": _safe_int(r.get("두께")),
+                            "규격mm": str(r.get("규격") or r.get("규격(mm)") or "").strip(),
+                            "규격자": str(r.get("규격(자)") or r.get("자수") or "").strip(),
+                            "일자": str(r.get("일자") or r.get("날짜") or "").strip(),
                         }
                         row_data.update(price_calc)
-                        # 파일 기재 단가 (있으면)
-                        row_data["파일_원_m2"] = float(r.get("원/m2", r.get("단가", 0)) or 0)
-                        row_data["파일_원_평"] = float(r.get("원/평", 0) or 0)
-                        # 오기 여부 (±5원 초과)
+                        row_data["파일_원_m2"] = _safe_float(r.get("원/m2") or r.get("단가"))
+                        row_data["파일_원_평"] = _safe_float(r.get("원/평"))
                         row_data["오기여부"] = (
                             abs(row_data["원_m2"] - row_data["파일_원_m2"]) > 5
                             if row_data["파일_원_m2"] > 0 and row_data["원_m2"] > 0 else False
@@ -442,22 +466,143 @@ with tab5:
         inp_month2 = col_m2.text_input("월", value=auto_month2, key="sm2")
 
         try:
-            df_sb = pd.read_excel(summary_file, header=None)
-            st.success(f"파일 읽기 완료 — {len(df_sb)}행")
+            xl2 = pd.ExcelFile(summary_file)
+            sheets2 = xl2.sheet_names
+            st.success(f"파일 읽기 완료 — 시트 {len(sheets2)}개: {', '.join(sheets2)}")
 
-            # 집계 값 입력 (자동 파싱이 어려우므로 사용자 직접 입력 제공)
-            st.markdown("**수불 집계 입력** (파일 확인 후 직접 입력)")
+            # ── 자동 집계 시도 ────────────────────────────────────────────
+            # 구분 컬럼에서 기초/입고/출고/기말 행을 찾아 매수·금액 합산
+            auto = {"기초재고_매": 0, "기초재고_금액": 0,
+                    "당기입고_매": 0, "당기입고_금액": 0,
+                    "당기사용_매": 0, "당기사용_금액": 0,
+                    "기말재고_매": 0, "기말재고_금액": 0}
+            parsed_ok = False
+
+            # "수불용" 시트 우선, 없으면 전체 시트 순서
+            priority = [s for s in sheets2 if "수불" in s] + \
+                       [s for s in sheets2 if "수불" not in s]
+
+            for sh in priority:
+                try:
+                    df_sh = xl2.parse(sh, header=None)
+                    if df_sh.empty:
+                        continue
+
+                    # 헤더 행 탐색 (구분/매수/금액 등 포함 행)
+                    hrow = None
+                    for i, row in df_sh.iterrows():
+                        rstr = " ".join(str(v) for v in row.values if pd.notna(v))
+                        if any(k in rstr for k in ["매수", "금액", "수량", "구분"]):
+                            hrow = i
+                            break
+
+                    if hrow is not None:
+                        df_sh.columns = df_sh.iloc[hrow]
+                        df_sh = df_sh.iloc[hrow+1:].reset_index(drop=True)
+
+                    # 구분 컬럼 찾기 (구분, 항목, 품목 등)
+                    구분col = next((c for c in df_sh.columns
+                                   if str(c).strip() in ["구분","항목","품목","내용"]), None)
+                    매수col = next((c for c in df_sh.columns
+                                   if str(c).strip() in ["매수","수량","장수","매"]), None)
+                    금액col = next((c for c in df_sh.columns
+                                   if str(c).strip() in ["금액","원가","합계금액","금액(원)"]), None)
+
+                    if 구분col is None:
+                        # 구분 컬럼 없으면 전체 셀에서 키워드 탐색
+                        for _, row in df_sh.iterrows():
+                            for col_idx, val in enumerate(row.values):
+                                val_str = str(val).strip()
+                                if any(k in val_str for k in ["기초재고","전월재고","기초"]):
+                                    # 같은 행에서 숫자 추출
+                                    nums = [_safe_float(v) for v in row.values if _safe_float(v) > 0]
+                                    if len(nums) >= 2:
+                                        auto["기초재고_매"] += int(nums[0])
+                                        auto["기초재고_금액"] += nums[1]
+                                        parsed_ok = True
+                                elif any(k in val_str for k in ["당기입고","입고"]):
+                                    nums = [_safe_float(v) for v in row.values if _safe_float(v) > 0]
+                                    if len(nums) >= 2:
+                                        auto["당기입고_매"] += int(nums[0])
+                                        auto["당기입고_금액"] += nums[1]
+                                        parsed_ok = True
+                                elif any(k in val_str for k in ["당기출고","당기사용","출고","사용"]):
+                                    nums = [_safe_float(v) for v in row.values if _safe_float(v) > 0]
+                                    if len(nums) >= 2:
+                                        auto["당기사용_매"] += int(nums[0])
+                                        auto["당기사용_금액"] += nums[1]
+                                        parsed_ok = True
+                                elif any(k in val_str for k in ["기말재고","기말"]):
+                                    nums = [_safe_float(v) for v in row.values if _safe_float(v) > 0]
+                                    if len(nums) >= 2:
+                                        auto["기말재고_매"] += int(nums[0])
+                                        auto["기말재고_금액"] += nums[1]
+                                        parsed_ok = True
+                    else:
+                        KEYWORD_MAP = {
+                            "기초": ("기초재고_매", "기초재고_금액"),
+                            "기초재고": ("기초재고_매", "기초재고_금액"),
+                            "전월재고": ("기초재고_매", "기초재고_금액"),
+                            "입고": ("당기입고_매", "당기입고_금액"),
+                            "당기입고": ("당기입고_매", "당기입고_금액"),
+                            "출고": ("당기사용_매", "당기사용_금액"),
+                            "사용": ("당기사용_매", "당기사용_금액"),
+                            "당기출고": ("당기사용_매", "당기사용_금액"),
+                            "당기사용": ("당기사용_매", "당기사용_금액"),
+                            "기말": ("기말재고_매", "기말재고_금액"),
+                            "기말재고": ("기말재고_매", "기말재고_금액"),
+                        }
+                        for _, row in df_sh.iterrows():
+                            구분val = str(row.get(구분col, "")).strip()
+                            for kw, (매_key, 금액_key) in KEYWORD_MAP.items():
+                                if kw in 구분val:
+                                    if 매수col:
+                                        auto[매_key] += _safe_int(row.get(매수col)) or 0
+                                    if 금액col:
+                                        auto[금액_key] += _safe_float(row.get(금액col))
+                                    parsed_ok = True
+                                    break
+
+                    if parsed_ok:
+                        break  # 첫 번째 파싱 성공 시트에서 중단
+
+                except Exception:
+                    continue
+
+            # ── 결과 표시 ────────────────────────────────────────────────
+            if parsed_ok:
+                st.success("✅ 파일에서 집계값 자동 추출 완료 — 확인 후 저장하세요.")
+            else:
+                st.warning("⚠️ 자동 추출 실패 — 아래에 직접 입력해주세요.")
+
+            # 파싱 결과를 기본값으로 form 표시
+            with st.expander("📋 파일 원시 데이터 확인 (첫 번째 시트)", expanded=False):
+                try:
+                    preview_df = xl2.parse(priority[0], header=None, nrows=20)
+                    st.dataframe(preview_df, use_container_width=True)
+                except Exception:
+                    pass
+
+            st.markdown("**수불 집계 확인 / 수정**")
             c1, c2 = st.columns(2)
             with c1:
-                ki_mae = st.number_input("기초재고 (매)", min_value=0, step=1, key="ki_mae")
-                ki_amt = st.number_input("기초재고 (금액, 원)", min_value=0, step=1000, key="ki_amt")
-                in_mae = st.number_input("당기입고 (매)", min_value=0, step=1, key="in_mae")
-                in_amt = st.number_input("당기입고 (금액, 원)", min_value=0, step=1000, key="in_amt")
+                ki_mae = st.number_input("기초재고 (매)", min_value=0, step=1,
+                                         value=int(auto["기초재고_매"]), key="ki_mae")
+                ki_amt = st.number_input("기초재고 (금액, 원)", min_value=0, step=1000,
+                                          value=int(auto["기초재고_금액"]), key="ki_amt")
+                in_mae = st.number_input("당기입고 (매)", min_value=0, step=1,
+                                          value=int(auto["당기입고_매"]), key="in_mae")
+                in_amt = st.number_input("당기입고 (금액, 원)", min_value=0, step=1000,
+                                          value=int(auto["당기입고_금액"]), key="in_amt")
             with c2:
-                use_mae = st.number_input("당기사용 (매)", min_value=0, step=1, key="use_mae")
-                use_amt = st.number_input("당기사용 (금액, 원)", min_value=0, step=1000, key="use_amt")
-                ke_mae = st.number_input("기말재고 (매)", min_value=0, step=1, key="ke_mae")
-                ke_amt = st.number_input("기말재고 (금액, 원)", min_value=0, step=1000, key="ke_amt")
+                use_mae = st.number_input("당기사용 (매)", min_value=0, step=1,
+                                           value=int(auto["당기사용_매"]), key="use_mae")
+                use_amt = st.number_input("당기사용 (금액, 원)", min_value=0, step=1000,
+                                           value=int(auto["당기사용_금액"]), key="use_amt")
+                ke_mae = st.number_input("기말재고 (매)", min_value=0, step=1,
+                                          value=int(auto["기말재고_매"]), key="ke_mae")
+                ke_amt = st.number_input("기말재고 (금액, 원)", min_value=0, step=1000,
+                                          value=int(auto["기말재고_금액"]), key="ke_amt")
 
             if st.button("☁️ raw_material_summary에 저장", type="primary", use_container_width=True, key="save_summary"):
                 with st.spinner("저장 중..."):
