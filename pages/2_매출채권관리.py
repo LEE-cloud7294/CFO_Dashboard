@@ -64,7 +64,7 @@ last_day = calendar.monthrange(year, month)[1]
 as_of = date(year, month, last_day)
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)   # 5분 — 재업로드 후 빠른 반영
 def load_cumulative(ym: str):
     df = load_journal_upto(ym)
     if not df.empty and "계정그룹" not in df.columns:

@@ -78,7 +78,7 @@ def load_data(ym: str):
     return df, kpi
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)   # 5분 — 재업로드 후 빠른 반영
 def load_ar_cumulative(ym: str) -> pd.DataFrame:
     """FIFO 정확도를 위한 전체 누적 AR — 창업일~선택월 전체."""
     df = load_journal_upto(ym)
