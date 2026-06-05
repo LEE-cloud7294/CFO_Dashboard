@@ -107,16 +107,20 @@ def load_recent_trend(month_list: list) -> pd.DataFrame:
         if annual_dep > 0:
             k = apply_monthly_depreciation(k, annual_dep / 12)
         비용분류 = k.get("비용대분류_v7", {})
+        매출_t = k.get("매출액", 0)
         총인건비_t = (k.get("인건비", 0)
                     + 비용분류.get("퇴직급여", 0)
                     + 비용분류.get("4대보험", 0)
                     + 비용분류.get("복리후생", 0))
+        원재료_t = k.get("원재료순", k.get("원재료", 0))
+        부재료_t = k.get("부재료매입", k.get("부재료", 0))
         rows.append({
             "ym": ym,
             "label": f"{ym[2:4]}.{ym[5:7]}",
-            "매출액": k.get("매출액", 0),
+            "매출액": 매출_t,
             "영업이익률": k.get("영업이익률_v7", k.get("영업이익률", 0)),
-            "총인건비율": (총인건비_t / k.get("매출액", 1) * 100) if k.get("매출액", 0) > 0 else 0,
+            "총인건비율": (총인건비_t / 매출_t * 100) if 매출_t > 0 else 0,
+            "원부재료율": ((원재료_t + 부재료_t) / 매출_t * 100) if 매출_t > 0 else 0,
         })
     return pd.DataFrame(rows)
 
@@ -343,11 +347,28 @@ if not trend_df.empty and len(trend_df) >= 2:
         marker=dict(size=6),
         yaxis="y2",
     ))
+    # 원재료+부재료율 꺾은선 (오른쪽 Y)
+    fig_trend.add_trace(go.Scatter(
+        name="원+부재료율",
+        x=trend_df["label"],
+        y=trend_df["원부재료율"],
+        mode="lines+markers+text",
+        line=dict(color="#fbbf24", width=2),
+        marker=dict(size=7),
+        text=trend_df["원부재료율"].apply(lambda v: f"{v:.1f}%"),
+        textposition="bottom center",
+        textfont=dict(size=10, color="#fbbf24"),
+        yaxis="y2",
+    ))
+    y2_max = max(
+        trend_df[["영업이익률", "총인건비율", "원부재료율"]].max().max() + 8,
+        60
+    )
     fig_trend.update_layout(
         yaxis=dict(title="매출액 (백만원)", tickformat=",.0f"),
         yaxis2=dict(title="%", overlaying="y", side="right",
-                    ticksuffix="%", range=[-20, max(40, trend_df["총인건비율"].max() + 5)]),
-        height=300,
+                    ticksuffix="%", range=[-25, y2_max]),
+        height=340,
         margin=dict(t=20, b=30),
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="white"),
@@ -355,7 +376,7 @@ if not trend_df.empty and len(trend_df) >= 2:
         barmode="group",
     )
     st.plotly_chart(fig_trend, use_container_width=True)
-    st.caption("파란 막대=매출액(백만원) | 초록선=영업이익률% | 빨간점선=총인건비율%")
+    st.caption("파란 막대=매출액(백만원) | 초록=영업이익률 | 빨간점=총인건비율 | 노란=원+부재료율")
 else:
     st.info("최소 2개월 데이터 필요")
 
