@@ -317,7 +317,24 @@ else:
     # 표시용 가공
     detail_disp = detail_df.copy()
     if "금액_원" in detail_disp.columns:
-        detail_disp["금액"] = detail_disp["금액_원"].apply(fmt_krw)
+        detail_disp["금액(부가세제외)"] = detail_disp["금액_원"].apply(fmt_krw)
+    # 부가세 (저장된 값 우선, 없으면 10% 계산)
+    if "부가세_원" in detail_disp.columns:
+        detail_disp["부가세(10%)"] = detail_disp["부가세_원"].apply(
+            lambda v: fmt_krw(v) if pd.notna(v) and v > 0 else fmt_krw(detail_disp.loc[detail_disp.index[0], "금액_원"] * 0.1)
+        )
+        detail_disp["부가세(10%)"] = detail_disp.apply(
+            lambda r: fmt_krw(r["부가세_원"]) if pd.notna(r.get("부가세_원")) and r.get("부가세_원", 0) > 0
+                      else fmt_krw(r.get("금액_원", 0) * 0.1), axis=1
+        )
+    elif "금액_원" in detail_disp.columns:
+        detail_disp["부가세(10%)"] = detail_disp["금액_원"].apply(lambda v: fmt_krw(round(v * 0.1)))
+    if "합계_원" in detail_disp.columns:
+        detail_disp["합계(부가세포함)"] = detail_disp["합계_원"].apply(
+            lambda v: fmt_krw(v) if pd.notna(v) and v > 0 else "—"
+        )
+    elif "금액_원" in detail_disp.columns:
+        detail_disp["합계(부가세포함)"] = detail_disp["금액_원"].apply(lambda v: fmt_krw(round(v * 1.1)))
     if "원_m2" in detail_disp.columns:
         detail_disp["원/㎡"] = detail_disp["원_m2"].apply(lambda v: f"{v:,.0f}" if v else "—")
     if "원_평" in detail_disp.columns:
@@ -329,8 +346,9 @@ else:
     if "year" in detail_disp.columns and "month" in detail_disp.columns:
         detail_disp["연월"] = detail_disp["year"].astype(str) + "-" + detail_disp["month"].astype(str).str.zfill(2)
 
-    show_cols = [c for c in ["연월", "거래처", "원산지", "두께", "규격자", "규격mm",
-                              "일자", "면적(㎡)", "금액", "원/㎡", "원/평", "오기여부"]
+    show_cols = [c for c in ["연월", "일자", "거래처", "원산지", "두께", "규격자", "규격mm",
+                              "면적(㎡)", "금액(부가세제외)", "부가세(10%)", "합계(부가세포함)",
+                              "원/㎡", "원/평", "오기여부"]
                  if c in detail_disp.columns]
 
     st.dataframe(detail_disp[show_cols], use_container_width=True, hide_index=True,

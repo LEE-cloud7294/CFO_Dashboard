@@ -372,6 +372,7 @@ with tab5:
             CI = {"일자":2,"제품":3,"메이커":4,"두께":5,"S1":6,"S2":8,
                   "폭1":9,"폭2":11,"매수":13,"면적":14,"원m2":15,
                   "금액":16,"합계":18,"원평":24}
+            # col16=금액(부가세제외), col17=부가세(10%), col18=합계(부가세포함)
 
             # Summary/수불용/기준 시트만 스킵 — KGT는 거래처이므로 포함
             SKIP_KEYWORDS = ["summary", "summay", "수불", "기준", "년간", "월간"]
@@ -409,10 +410,27 @@ with tab5:
                         면적 = _safe_float(vals[CI["면적"]] if len(vals) > CI["면적"] else 0)
                         원m2 = _safe_float(vals[CI["원m2"]] if len(vals) > CI["원m2"] else 0)
                         원평 = _safe_float(vals[CI["원평"]] if len(vals) > CI["원평"] else 0)
+                        합계 = _safe_float(vals[CI["합계"]] if len(vals) > CI["합계"] else 0)
                         메이커 = str(vals[CI["메이커"]] if len(vals) > CI["메이커"] and pd.notna(vals[CI["메이커"]]) else "").strip()
                         제품   = str(vals[CI["제품"]]   if len(vals) > CI["제품"]   and pd.notna(vals[CI["제품"]])   else "").strip()
-                        일자   = str(vals[CI["일자"]]   if len(vals) > CI["일자"]   and pd.notna(vals[CI["일자"]])   else "").strip()
                         매수 = _safe_int(vals[CI["매수"]] if len(vals) > CI["매수"] else None)
+
+                        # 일자 파싱: "5/13" 또는 Timestamp → YYYY-MM-DD
+                        일자_raw = vals[CI["일자"]] if len(vals) > CI["일자"] and pd.notna(vals[CI["일자"]]) else None
+                        if 일자_raw is None:
+                            일자 = ""
+                        elif hasattr(일자_raw, "strftime"):
+                            일자 = 일자_raw.strftime("%Y-%m-%d")
+                        else:
+                            try:
+                                parts = str(일자_raw).strip().split("/")
+                                if len(parts) == 2:
+                                    m_d, d_d = int(parts[0]), int(parts[1])
+                                    일자 = f"{inp_year}-{m_d:02d}-{d_d:02d}"
+                                else:
+                                    일자 = str(일자_raw).strip()
+                            except Exception:
+                                일자 = str(일자_raw).strip()
 
                         # 규격 문자열
                         규격mm = f"{s1}×{s2}" if s1 and s2 else ""
@@ -422,6 +440,7 @@ with tab5:
                         if 원평 <= 0 and 원m2 > 0:
                             원평 = round(원m2 / 10.764)
 
+                        부가세 = round(합계 - 금액) if 합계 > 금액 else round(금액 * 0.1)
                         all_price_rows.append({
                             "year": inp_year, "month": inp_month,
                             "거래처": sheet,
@@ -433,6 +452,8 @@ with tab5:
                             "일자": 일자,
                             "면적_m2": 면적,
                             "금액_원": 금액,
+                            "부가세_원": 부가세,
+                            "합계_원": 합계 if 합계 > 0 else round(금액 * 1.1),
                             "원_m2": 원m2,
                             "원_평": 원평,
                             "파일_원_m2": 원m2,

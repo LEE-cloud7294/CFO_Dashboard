@@ -321,6 +321,8 @@ CREATE TABLE IF NOT EXISTS raw_material_price (
     일자        text,
     면적_m2     numeric DEFAULT 0,
     금액_원     numeric DEFAULT 0,
+    부가세_원   numeric DEFAULT 0,
+    합계_원     numeric DEFAULT 0,
     원_m2       numeric DEFAULT 0,
     원_평       numeric DEFAULT 0,
     파일_원_m2  numeric DEFAULT 0,
@@ -328,6 +330,9 @@ CREATE TABLE IF NOT EXISTS raw_material_price (
     오기여부    boolean DEFAULT false
 );
 CREATE INDEX IF NOT EXISTS idx_rmp_ym ON raw_material_price(year, month);
+-- 기존 테이블에 컬럼 추가 (이미 생성된 경우):
+-- ALTER TABLE raw_material_price ADD COLUMN IF NOT EXISTS 부가세_원 numeric DEFAULT 0;
+-- ALTER TABLE raw_material_price ADD COLUMN IF NOT EXISTS 합계_원 numeric DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS raw_material_summary (
     id              bigserial PRIMARY KEY,
@@ -347,7 +352,8 @@ CREATE TABLE IF NOT EXISTS raw_material_summary (
 
 RAW_MATERIAL_PRICE_COLUMNS = [
     "year", "month", "거래처", "원산지", "제품", "두께", "규격mm", "규격자",
-    "일자", "면적_m2", "금액_원", "원_m2", "원_평", "파일_원_m2", "파일_원_평", "오기여부",
+    "일자", "면적_m2", "금액_원", "부가세_원", "합계_원",
+    "원_m2", "원_평", "파일_원_m2", "파일_원_평", "오기여부",
 ]
 
 
