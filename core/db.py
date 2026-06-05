@@ -302,3 +302,120 @@ def get_tax_years() -> list[str]:
         return sorted(set(r["year"] for r in res.data), reverse=True)
     except Exception:
         return []
+
+
+# ── raw_material (원판 단가·수불 — 원판관리 페이지) ─────────────────────────
+
+RAW_MATERIAL_SQL = """
+-- Supabase SQL Editor에서 실행 (최초 1회)
+CREATE TABLE IF NOT EXISTS raw_material_price (
+    id          bigserial PRIMARY KEY,
+    year        text NOT NULL,
+    month       text NOT NULL,
+    거래처      text,
+    원산지      text,
+    제품        text,
+    두께        int,
+    규격mm      text,
+    규격자      text,
+    일자        text,
+    면적_m2     numeric DEFAULT 0,
+    금액_원     numeric DEFAULT 0,
+    원_m2       numeric DEFAULT 0,
+    원_평       numeric DEFAULT 0,
+    파일_원_m2  numeric DEFAULT 0,
+    파일_원_평  numeric DEFAULT 0,
+    오기여부    boolean DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS idx_rmp_ym ON raw_material_price(year, month);
+
+CREATE TABLE IF NOT EXISTS raw_material_summary (
+    id              bigserial PRIMARY KEY,
+    year            text NOT NULL,
+    month           text NOT NULL,
+    당기입고_매     int DEFAULT 0,
+    당기입고_금액   numeric DEFAULT 0,
+    당기사용_매     int DEFAULT 0,
+    당기사용_금액   numeric DEFAULT 0,
+    기초재고_매     int DEFAULT 0,
+    기초재고_금액   numeric DEFAULT 0,
+    기말재고_매     int DEFAULT 0,
+    기말재고_금액   numeric DEFAULT 0,
+    UNIQUE(year, month)
+);
+"""
+
+RAW_MATERIAL_PRICE_COLUMNS = [
+    "year", "month", "거래처", "원산지", "제품", "두께", "규격mm", "규격자",
+    "일자", "면적_m2", "금액_원", "원_m2", "원_평", "파일_원_m2", "파일_원_평", "오기여부",
+]
+
+
+def upsert_raw_material_price(df: pd.DataFrame, year: str, month: str) -> int:
+    """원판 단가 데이터를 raw_material_price에 저장 (연월 단위 덮어쓰기)."""
+    client = get_client()
+    try:
+        client.table("raw_material_price").delete().eq("year", year).eq("month", month).execute()
+        send_cols = [c for c in RAW_MATERIAL_PRICE_COLUMNS if c in df.columns]
+        records = df[send_cols].to_dict(orient="records")
+        batch = 500
+        for i in range(0, len(records), batch):
+            client.table("raw_material_price").insert(records[i:i+batch]).execute()
+        return len(records)
+    except Exception as e:
+        raise RuntimeError(f"raw_material_price 저장 실패: {e}")
+
+
+def load_raw_material_price(year: str, month: str) -> pd.DataFrame:
+    """특정 연월 원판 단가 데이터 로드."""
+    client = get_client()
+    try:
+        res = (client.table("raw_material_price")
+               .select("*")
+               .eq("year", year)
+               .eq("month", month)
+               .execute())
+        if not res.data:
+            return pd.DataFrame()
+        return pd.DataFrame(res.data)
+    except Exception:
+        return pd.DataFrame()
+
+
+def upsert_raw_material_summary(data: dict, year: str, month: str) -> None:
+    """원판 월별 수불 집계 저장 (upsert)."""
+    client = get_client()
+    try:
+        data_with_ym = {**data, "year": year, "month": month}
+        client.table("raw_material_summary").upsert(data_with_ym).execute()
+    except Exception as e:
+        raise RuntimeError(f"raw_material_summary 저장 실패: {e}")
+
+
+def load_raw_material_summary() -> pd.DataFrame:
+    """전체 원판 월별 수불 집계 로드."""
+    client = get_client()
+    try:
+        res = (client.table("raw_material_summary")
+               .select("*")
+               .order("year")
+               .order("month")
+               .execute())
+        if not res.data:
+            return pd.DataFrame()
+        return pd.DataFrame(res.data)
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_raw_material_months() -> list[tuple[str, str]]:
+    """raw_material_price에 저장된 (연도, 월) 목록 반환."""
+    client = get_client()
+    try:
+        res = client.table("raw_material_price").select("year,month").execute()
+        if not res.data:
+            return []
+        pairs = sorted(set((r["year"], r["month"]) for r in res.data), reverse=True)
+        return pairs
+    except Exception:
+        return []

@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -9,6 +10,8 @@ from core.db import (
     load_master_blacklist, add_blacklist, load_debts,
     upsert_tax_journal, load_tax_depreciation, get_tax_years,
     TAX_JOURNAL_SQL,
+    upsert_raw_material_price, upsert_raw_material_summary,
+    load_raw_material_price, RAW_MATERIAL_SQL,
 )
 from core.metrics import calc_kpi
 
@@ -26,11 +29,12 @@ if not st.session_state.get("authenticated"):
 
 st.title("⚙️ 데이터 허브 & 설정")
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📤 분개장 업로드",
     "📊 세무사 분개장 (감가상각)",
     "🚫 블랙리스트",
     "🏦 대출 정보",
+    "🪟 원판 데이터 업로드",
 ])
 
 # ── TAB 1: 분개장 업로드 ─────────────────────────────────────────────────────
@@ -266,3 +270,208 @@ with tab4:
                 }).execute()
                 st.success("저장 완료")
                 st.rerun()
+
+# ── TAB 5: 원판 데이터 업로드 ─────────────────────────────────────────────
+with tab5:
+    st.subheader("원판 구매내역 · 수불부 업로드")
+    st.info(
+        "**파일 1 (구매내역)**: `원판구매내역_Yr{YYYY}-{MM}-{DD}.xlsx` — 거래처별 시트 구분\n\n"
+        "**파일 2 (수불부)**: `{YYYY}_{MM}_원판수불부_곡성.xlsx` — 기초/입고/사용/기말 재고\n\n"
+        "파일명에서 연월을 자동 추출합니다. 같은 연월 재업로드 시 덮어씁니다."
+    )
+
+    with st.expander("⚙️ 최초 설정: Supabase raw_material 테이블 생성"):
+        st.caption("Supabase 대시보드 → SQL Editor에서 실행 (최초 1회)")
+        st.code(RAW_MATERIAL_SQL, language="sql")
+
+    st.divider()
+
+    # ── 파일 1: 구매내역 ─────────────────────────────────────────────────
+    st.markdown("#### 📥 파일 1: 원판 구매내역")
+    st.caption("시트탭명 = 거래처명 (KCC글라스, LX글라스, 한유에스앤지, 한성유엔씨)")
+
+    price_file = st.file_uploader(
+        "원판구매내역 파일 (xlsx)",
+        type=["xlsx", "xls"],
+        key="rawmat_price_upload",
+    )
+
+    def _extract_ym_from_filename(name: str) -> tuple[str, str]:
+        """파일명에서 (year, month) 추출. 실패 시 ("", "")."""
+        import re
+        m = re.search(r"(\d{4})[_\-](\d{2})", name)
+        if m:
+            return m.group(1), m.group(2)
+        m = re.search(r"Yr(\d{4})[_\-](\d{2})", name)
+        if m:
+            return m.group(1), m.group(2)
+        return "", ""
+
+    def _calc_unit_price(row) -> dict:
+        """단가 계산: 면적(m²) 기반 원/㎡, 원/평."""
+        try:
+            w = float(row.get("가로", 0) or row.get("폭", 0) or 0)
+            h = float(row.get("세로", 0) or row.get("길이", 0) or 0)
+            qty = float(row.get("매수", 0) or row.get("수량", 0) or 1)
+            amt = float(row.get("금액", 0) or row.get("공급가액", 0) or 0)
+
+            # mm → m 변환 (1000 초과면 mm 단위로 가정)
+            if w > 10:
+                w /= 1000
+            if h > 10:
+                h /= 1000
+
+            area = w * h * qty
+            if area <= 0 or amt <= 0:
+                return {"면적_m2": 0, "금액_원": amt, "원_m2": 0, "원_평": 0}
+
+            won_m2 = amt / area
+            won_pyong = round(won_m2 / 10.764)
+            return {"면적_m2": round(area, 4), "금액_원": amt,
+                    "원_m2": round(won_m2), "원_평": won_pyong}
+        except Exception:
+            return {"면적_m2": 0, "금액_원": 0, "원_m2": 0, "원_평": 0}
+
+    if price_file:
+        fname = price_file.name
+        auto_year, auto_month = _extract_ym_from_filename(fname)
+
+        col_y, col_m = st.columns(2)
+        inp_year = col_y.text_input("연도 (자동감지)", value=auto_year)
+        inp_month = col_m.text_input("월 (자동감지)", value=auto_month)
+
+        try:
+            xl = pd.ExcelFile(price_file)
+            sheets = xl.sheet_names
+            st.success(f"파일 읽기 완료 — 시트 {len(sheets)}개: {', '.join(sheets)}")
+
+            all_price_rows = []
+            for sheet in sheets:
+                try:
+                    df_s = xl.parse(sheet, header=None)
+                    # 헤더 행 탐색 (가로/폭/세로 등 컬럼명 포함 행)
+                    header_row = None
+                    for i, row in df_s.iterrows():
+                        row_str = " ".join(str(v) for v in row.values if pd.notna(v))
+                        if any(k in row_str for k in ["가로", "세로", "폭", "길이", "두께", "매수", "금액"]):
+                            header_row = i
+                            break
+                    if header_row is not None:
+                        df_s.columns = df_s.iloc[header_row]
+                        df_s = df_s.iloc[header_row+1:].reset_index(drop=True)
+                        df_s = df_s.dropna(how="all")
+
+                    # 원산지 필터링 (원산지 문자열 포함 행 제외)
+                    if "원산지" in df_s.columns:
+                        df_s = df_s[~df_s["원산지"].astype(str).str.contains("원산지", na=False)]
+
+                    # 단가 계산
+                    for _, r in df_s.iterrows():
+                        price_calc = _calc_unit_price(r)
+                        row_data = {
+                            "year": inp_year, "month": inp_month,
+                            "거래처": sheet,
+                            "원산지": str(r.get("원산지", "")).strip() if "원산지" in df_s.columns else "",
+                            "제품": str(r.get("제품", r.get("품명", ""))).strip(),
+                            "두께": int(float(r.get("두께", 0) or 0)) if r.get("두께") else None,
+                            "규격mm": str(r.get("규격", r.get("규격(mm)", ""))).strip(),
+                            "규격자": str(r.get("규격(자)", r.get("자수", ""))).strip(),
+                            "일자": str(r.get("일자", r.get("날짜", ""))).strip(),
+                        }
+                        row_data.update(price_calc)
+                        # 파일 기재 단가 (있으면)
+                        row_data["파일_원_m2"] = float(r.get("원/m2", r.get("단가", 0)) or 0)
+                        row_data["파일_원_평"] = float(r.get("원/평", 0) or 0)
+                        # 오기 여부 (±5원 초과)
+                        row_data["오기여부"] = (
+                            abs(row_data["원_m2"] - row_data["파일_원_m2"]) > 5
+                            if row_data["파일_원_m2"] > 0 and row_data["원_m2"] > 0 else False
+                        )
+                        if price_calc["금액_원"] > 0:
+                            all_price_rows.append(row_data)
+
+                except Exception as e:
+                    st.warning(f"시트 '{sheet}' 처리 실패: {e}")
+
+            if all_price_rows:
+                price_preview = pd.DataFrame(all_price_rows)
+                st.markdown(f"**파싱 결과: {len(price_preview):,}건**")
+
+                오기_cnt = price_preview["오기여부"].sum() if "오기여부" in price_preview.columns else 0
+                if 오기_cnt > 0:
+                    st.warning(f"⚠️ 오기 의심 {오기_cnt}건 — 파일 단가 vs 직접계산 ±5원 초과")
+
+                with st.expander("미리보기 (상위 20행)"):
+                    show = ["거래처", "두께", "규격자", "일자", "금액_원", "원_m2", "원_평"]
+                    st.dataframe(price_preview[[c for c in show if c in price_preview.columns]].head(20),
+                                 use_container_width=True, hide_index=True)
+
+                if st.button("☁️ raw_material_price에 저장", type="primary", use_container_width=True, key="save_price"):
+                    with st.spinner("저장 중..."):
+                        try:
+                            count = upsert_raw_material_price(price_preview, inp_year, inp_month)
+                            st.success(f"✅ {inp_year}-{inp_month} 구매내역 {count:,}건 저장 완료!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"저장 실패: {e}")
+                            st.info("Supabase SQL Editor에서 raw_material 테이블 생성 후 재시도하세요.")
+            else:
+                st.warning("파싱된 유효 데이터 없음 — 파일 컬럼 구조를 확인하세요.")
+
+        except Exception as e:
+            st.error(f"파일 읽기 오류: {e}")
+
+    st.divider()
+
+    # ── 파일 2: 수불부 ───────────────────────────────────────────────────
+    st.markdown("#### 📥 파일 2: 원판 수불부")
+    st.caption("기초재고 / 당기입고 / 당기사용 / 기말재고 집계")
+
+    summary_file = st.file_uploader(
+        "원판 수불부 파일 (xlsx)",
+        type=["xlsx", "xls"],
+        key="rawmat_summary_upload",
+    )
+
+    if summary_file:
+        fname2 = summary_file.name
+        auto_year2, auto_month2 = _extract_ym_from_filename(fname2)
+
+        col_y2, col_m2 = st.columns(2)
+        inp_year2 = col_y2.text_input("연도", value=auto_year2, key="sy2")
+        inp_month2 = col_m2.text_input("월", value=auto_month2, key="sm2")
+
+        try:
+            df_sb = pd.read_excel(summary_file, header=None)
+            st.success(f"파일 읽기 완료 — {len(df_sb)}행")
+
+            # 집계 값 입력 (자동 파싱이 어려우므로 사용자 직접 입력 제공)
+            st.markdown("**수불 집계 입력** (파일 확인 후 직접 입력)")
+            c1, c2 = st.columns(2)
+            with c1:
+                ki_mae = st.number_input("기초재고 (매)", min_value=0, step=1, key="ki_mae")
+                ki_amt = st.number_input("기초재고 (금액, 원)", min_value=0, step=1000, key="ki_amt")
+                in_mae = st.number_input("당기입고 (매)", min_value=0, step=1, key="in_mae")
+                in_amt = st.number_input("당기입고 (금액, 원)", min_value=0, step=1000, key="in_amt")
+            with c2:
+                use_mae = st.number_input("당기사용 (매)", min_value=0, step=1, key="use_mae")
+                use_amt = st.number_input("당기사용 (금액, 원)", min_value=0, step=1000, key="use_amt")
+                ke_mae = st.number_input("기말재고 (매)", min_value=0, step=1, key="ke_mae")
+                ke_amt = st.number_input("기말재고 (금액, 원)", min_value=0, step=1000, key="ke_amt")
+
+            if st.button("☁️ raw_material_summary에 저장", type="primary", use_container_width=True, key="save_summary"):
+                with st.spinner("저장 중..."):
+                    try:
+                        summary_data = {
+                            "기초재고_매": ki_mae, "기초재고_금액": ki_amt,
+                            "당기입고_매": in_mae, "당기입고_금액": in_amt,
+                            "당기사용_매": use_mae, "당기사용_금액": use_amt,
+                            "기말재고_매": ke_mae, "기말재고_금액": ke_amt,
+                        }
+                        upsert_raw_material_summary(summary_data, inp_year2, inp_month2)
+                        st.success(f"✅ {inp_year2}-{inp_month2} 수불 집계 저장 완료!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
+        except Exception as e:
+            st.error(f"파일 읽기 오류: {e}")

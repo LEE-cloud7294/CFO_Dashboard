@@ -41,6 +41,24 @@ def _fill_ar_partner(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _merge_corrections(debits_df: pd.DataFrame, grp: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
+    """차변 음수 정정전표를 대변으로 흡수.
+
+    차변 < 0인 행 = 발생 취소 정정전표 → abs(차변)을 대변으로 변환해 credits에 합산.
+    반환: (credits_with_corrections, has_correction_flag)
+    """
+    neg_debits = grp[grp["차변"] < 0].copy()
+    has_correction = not neg_debits.empty
+
+    credits = grp[grp["대변"] > 0][["전표일자", "대변"]].sort_values("전표일자")
+
+    if has_correction:
+        extra = neg_debits.assign(대변=neg_debits["차변"].abs())[["전표일자", "대변"]]
+        credits = pd.concat([credits, extra]).sort_values("전표일자").reset_index(drop=True)
+
+    return credits, has_correction
+
+
 def extract_ar_collections(df: pd.DataFrame) -> pd.DataFrame:
     """108 대변(채권 감소) 이벤트 추출 — 회수 수단 판별 포함.
 
@@ -93,12 +111,12 @@ def extract_ar_collections(df: pd.DataFrame) -> pd.DataFrame:
 def calc_aging(df: pd.DataFrame, as_of: date = None) -> pd.DataFrame:
     """108(외상매출금) 거래처별 FIFO 연령분석.
 
-    발생(108 차변)과 회수(108 대변)를 분리해 오래된 발생부터 회수를 차감.
-    잔여 발생 건의 날짜로 aging 구간 결정.
-
-    반환 컬럼: 거래처, 잔액, 정상(0-30), 주의(31-60), 경고(61-90), 악성(91+)
+    - 차변 음수(정정전표) → 대변으로 흡수 후 FIFO 차감
+    - 반환 컬럼: 거래처, 잔액, 정상(0-30), 주의(31-60), 경고(61-90), 악성(91+),
+                 마지막입금일, 경과일, 정정전표
     """
-    COLS = ["거래처", "잔액", "정상(0-30)", "주의(31-60)", "경고(61-90)", "악성(91+)"]
+    COLS = ["거래처", "잔액", "정상(0-30)", "주의(31-60)", "경고(61-90)", "악성(91+)",
+            "마지막입금일", "경과일", "정정전표"]
 
     if as_of is None:
         dates = pd.to_datetime(df["전표일자"], errors="coerce").dropna()
@@ -117,7 +135,11 @@ def calc_aging(df: pd.DataFrame, as_of: date = None) -> pd.DataFrame:
 
     for partner, grp in ar_df.groupby("거래처"):
         debits = grp[grp["차변"] > 0][["전표일자", "차변"]].sort_values("전표일자")
-        credits = grp[grp["대변"] > 0][["전표일자", "대변"]].sort_values("전표일자")
+        credits, has_correction = _merge_corrections(debits, grp)
+
+        # 마지막 입금일 (정정전표 포함 모든 차감 이벤트 최근일)
+        last_pmt = credits["전표일자"].max() if not credits.empty else None
+        days_since = int((as_of_ts - last_pmt).days) if last_pmt is not None else None
 
         # FIFO 큐: [발생일, 잔여금액]
         open_items = [[row["전표일자"], row["차변"]] for _, row in debits.iterrows()]
@@ -157,6 +179,9 @@ def calc_aging(df: pd.DataFrame, as_of: date = None) -> pd.DataFrame:
             "주의(31-60)": round(buckets["주의(31-60)"]),
             "경고(61-90)": round(buckets["경고(61-90)"]),
             "악성(91+)": round(buckets["악성(91+)"]),
+            "마지막입금일": last_pmt.date() if last_pmt is not None else None,
+            "경과일": days_since,
+            "정정전표": has_correction,
         })
 
     if not result:
@@ -172,8 +197,8 @@ def calc_aging(df: pd.DataFrame, as_of: date = None) -> pd.DataFrame:
 def calc_ar_summary(df: pd.DataFrame) -> pd.DataFrame:
     """거래처별 AR 발생액 / 회수액 / 회수율 / DSO.
 
-    DSO = FIFO 매칭 후 (회수일 - 발생일) 가중평균. 단일 월은 의미 없고 누적 기준으로 사용.
-    반환 컬럼: 거래처, 발생액, 회수액, 잔액, 회수율(%), DSO(일)
+    DSO = FIFO 매칭 후 (회수일 - 발생일) 가중평균.
+    반환 컬럼: 거래처, 발생액, 회수액, 잔액, 회수율(%), DSO(일), 마지막입금일, 경과일, 정정전표
     """
     df = _fill_ar_partner(df)
     ar_df = df[df["계정코드"].astype(str).str.startswith("108")].copy()
@@ -181,22 +206,26 @@ def calc_ar_summary(df: pd.DataFrame) -> pd.DataFrame:
     ar_df = ar_df.dropna(subset=["전표일자"])
 
     if ar_df.empty:
-        return pd.DataFrame(columns=["거래처", "발생액", "회수액", "잔액", "회수율(%)", "DSO(일)"])
+        return pd.DataFrame(columns=["거래처", "발생액", "회수액", "잔액", "회수율(%)", "DSO(일)", "마지막입금일", "경과일", "정정전표"])
 
+    today_ts = pd.Timestamp(date.today())
     result = []
 
     for partner, grp in ar_df.groupby("거래처"):
         debits = grp[grp["차변"] > 0][["전표일자", "차변"]].sort_values("전표일자")
-        credits = grp[grp["대변"] > 0][["전표일자", "대변"]].sort_values("전표일자")
+        credits, has_correction = _merge_corrections(debits, grp)
 
         발생액 = debits["차변"].sum()
         회수액 = credits["대변"].sum()
         잔액 = max(발생액 - 회수액, 0)
         회수율 = (min(회수액, 발생액) / 발생액 * 100) if 발생액 > 0 else 0
 
+        last_pmt = credits["전표일자"].max() if not credits.empty else None
+        days_since = int((today_ts - last_pmt).days) if last_pmt is not None else None
+
         # FIFO 매칭으로 DSO 계산
         open_items = [[row["전표일자"], row["차변"]] for _, row in debits.iterrows()]
-        dso_pairs = []  # (days, amount)
+        dso_pairs = []
 
         for _, crow in credits.iterrows():
             remaining = crow["대변"]
@@ -223,10 +252,13 @@ def calc_ar_summary(df: pd.DataFrame) -> pd.DataFrame:
             "잔액": round(잔액),
             "회수율(%)": round(회수율, 1),
             "DSO(일)": round(dso) if dso is not None else None,
+            "마지막입금일": last_pmt.date() if last_pmt is not None else None,
+            "경과일": days_since,
+            "정정전표": has_correction,
         })
 
     if not result:
-        return pd.DataFrame(columns=["거래처", "발생액", "회수액", "잔액", "회수율(%)", "DSO(일)"])
+        return pd.DataFrame(columns=["거래처", "발생액", "회수액", "잔액", "회수율(%)", "DSO(일)", "마지막입금일", "경과일", "정정전표"])
 
     return (
         pd.DataFrame(result)
@@ -271,13 +303,7 @@ def calc_payment_pattern(df: pd.DataFrame) -> pd.DataFrame:
     """거래처별 실제 결제 기간 분포 분석 — 여신 관리 핵심 지표.
 
     FIFO 매칭으로 각 발생 건이 실제로 얼마 만에 회수됐는지 추적.
-    → 거래처가 '2달 여신'이라고 했는데 실제로는 몇 달인지 데이터로 확인.
-
-    반환 컬럼:
-        거래처, 발생액, 회수액, 잔액, 회수율(%),
-        평균결제일, 최소결제일, 최대결제일,
-        30일이내(%), 31-60일(%), 61-90일(%), 91일이상(%),
-        권장여신(일)   ← 실 데이터 기반 자동 산출
+    차변 음수(정정전표) → 대변으로 흡수 후 처리.
     """
     df = _fill_ar_partner(df)
     ar_df = df[df["계정코드"].astype(str).str.startswith("108")].copy()
@@ -290,8 +316,8 @@ def calc_payment_pattern(df: pd.DataFrame) -> pd.DataFrame:
     result = []
 
     for partner, grp in ar_df.groupby("거래처"):
-        debits  = grp[grp["차변"] > 0][["전표일자", "차변"]].sort_values("전표일자")
-        credits = grp[grp["대변"] > 0][["전표일자", "대변"]].sort_values("전표일자")
+        debits = grp[grp["차변"] > 0][["전표일자", "차변"]].sort_values("전표일자")
+        credits, _ = _merge_corrections(debits, grp)
 
         if debits.empty:
             continue
@@ -301,7 +327,7 @@ def calc_payment_pattern(df: pd.DataFrame) -> pd.DataFrame:
 
         # FIFO 매칭 → 각 발생 건의 회수 소요일
         open_items = [[row["전표일자"], row["차변"]] for _, row in debits.iterrows()]
-        matched = []  # (days, amount)
+        matched = []
 
         for _, crow in credits.iterrows():
             remaining = crow["대변"]
@@ -322,10 +348,8 @@ def calc_payment_pattern(df: pd.DataFrame) -> pd.DataFrame:
         total_matched = sum(a for _, a in matched)
         all_days = [d for d, _ in matched]
 
-        # 가중평균 결제일 (금액 가중)
         avg_days = sum(d * a for d, a in matched) / total_matched
 
-        # 중간값 (금액 기준 50번째 백분위)
         sorted_matched = sorted(matched, key=lambda x: x[0])
         cumsum = 0
         median_days = sorted_matched[-1][0]
@@ -335,13 +359,11 @@ def calc_payment_pattern(df: pd.DataFrame) -> pd.DataFrame:
                 median_days = d
                 break
 
-        # 구간별 비중
         b30  = sum(a for d, a in matched if d <= 30)  / total_matched * 100
         b60  = sum(a for d, a in matched if 31 <= d <= 60)  / total_matched * 100
         b90  = sum(a for d, a in matched if 61 <= d <= 90)  / total_matched * 100
         b91p = sum(a for d, a in matched if d > 90)  / total_matched * 100
 
-        # 권장 여신기간: 95번째 백분위 기준 (대부분의 거래를 커버하는 기간)
         sorted_days = sorted(matched, key=lambda x: x[0])
         cum = 0
         p95_days = sorted_days[-1][0]
@@ -350,7 +372,6 @@ def calc_payment_pattern(df: pd.DataFrame) -> pd.DataFrame:
             if cum >= total_matched * 0.95:
                 p95_days = d
                 break
-        # 30일 단위로 올림
         recommended = ((p95_days // 30) + (1 if p95_days % 30 > 0 else 0)) * 30
 
         result.append({
@@ -381,19 +402,12 @@ def calc_payment_pattern(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def calc_bills_receivable(df: pd.DataFrame) -> dict:
-    """110(받을어음) 잔액 분석 — 어음수취 후 미현금화 리스크.
-
-    반환:
-        total_outstanding: 전체 미현금화 어음 잔액
-        by_partner: 거래처별 어음수취액 (108 대변 + 전표에 110 차변 존재)
-    """
+    """110(받을어음) 잔액 분석 — 어음수취 후 미현금화 리스크."""
     ar_df = df[df["계정코드"].astype(str).str.startswith("108")].copy()
     bill_df = df[df["계정코드"].astype(str).str.startswith("110")].copy()
 
-    # 110 총 잔액 (미현금화 어음)
     total_110 = bill_df["차변"].sum() - bill_df["대변"].sum()
 
-    # 거래처별 어음수취액: 108 대변과 같은 전표에 110 차변이 있는 것
     ar_df = _fill_ar_partner(ar_df)
     partner_bills = {}
 

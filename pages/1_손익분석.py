@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from core.db import load_journal, get_available_months, get_annual_dep
 from core.metrics import calc_kpi, _apply_cost_bucket, fmt_krw, apply_monthly_depreciation
 
-st.set_page_config(page_title="원가·비용 통제", page_icon="💰", layout="wide")
+st.set_page_config(page_title="손익 분석", page_icon="💰", layout="wide")
 
 if not st.session_state.get("authenticated"):
     pw = st.text_input("비밀번호", type="password")
@@ -20,8 +20,8 @@ if not st.session_state.get("authenticated"):
             st.error("비밀번호가 틀렸습니다.")
     st.stop()
 
-st.title("💰 원가 및 고정비 통제")
-st.caption("공장(5xx)·본사(8xx) 비용을 대분류별로 분석합니다.")
+st.title("💰 손익 분석")
+st.caption("공장(5xx)·본사(8xx) 비용 대분류 분석 | 월/연간 토글")
 
 months = get_available_months()
 if not months:

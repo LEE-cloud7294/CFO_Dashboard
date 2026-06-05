@@ -27,6 +27,13 @@ if not st.session_state.get("authenticated"):
 st.title("📋 매출채권 · 여신 집중 관리")
 st.caption("외상매출금(108) — 창업일부터 선택월 말일까지 전체 누적 이력 기준 FIFO 연령분석")
 
+# ── ERP 대조 전 신뢰도 안내 ────────────────────────────────────────────────
+st.warning(
+    "⚠️ **ERP 미수금 대조 전** — "
+    "정정전표(차변 음수) 처리 후 잔액·회수율·DSO는 참고용입니다. "
+    "마지막입금일·경과일·거래단절 여부는 신뢰 가능합니다."
+)
+
 months = get_available_months()
 if not months:
     st.warning("데이터가 없습니다. 데이터 허브에서 분개장을 업로드해 주세요.")
@@ -43,7 +50,6 @@ as_of = date(year, month, last_day)
 
 @st.cache_data(ttl=3600)
 def load_cumulative(ym: str):
-    """창업일~선택월 말일 전체 누적 로드 — 날짜 제한 없음 (FIFO 정확도 우선)."""
     df = load_journal_upto(ym)
     if not df.empty and "계정그룹" not in df.columns:
         df["계정그룹"] = df["계정코드"].astype(str).str[:1]
@@ -55,7 +61,7 @@ def get_blacklist():
     return load_master_blacklist()
 
 
-with st.spinner(f"{selected_ym} 말일 기준 전체 누적 데이터 불러오는 중 (최초 로딩 시 시간 소요)..."):
+with st.spinner(f"{selected_ym} 말일 기준 전체 누적 데이터 불러오는 중..."):
     df = load_cumulative(selected_ym)
 
 if df.empty:
@@ -91,9 +97,33 @@ with st.expander("🔍 외상매출금(108) 원시 데이터 진단"):
         c2.metric("발생 합계", fmt_krw(ar_raw['차변'].sum()))
         c3.metric("회수 합계", fmt_krw(ar_raw['대변'].sum()))
         c4.metric("순잔액", fmt_krw(ar_raw['차변'].sum()-ar_raw['대변'].sum()))
+        neg_cnt = (ar_raw["차변"] < 0).sum()
+        if neg_cnt > 0:
+            st.warning(f"⚠️ 차변 음수(정정전표): {neg_cnt}건 감지 — FIFO에서 자동 처리됨. ERP 대조로 검증 필요.")
         blank_cr = ar_raw[(ar_raw["대변"]>0) & (ar_raw["거래처"].astype(str).str.strip()=="")]
         if len(blank_cr) > 0:
             st.warning(f"⚠️ 회수 행 중 거래처 공란: {len(blank_cr)}개 → 전표번호로 자동 보완 적용")
+
+# ── 장기 미입금 경보 ────────────────────────────────────────────────────
+st.markdown("---")
+st.subheader("🚨 장기 미입금 거래처 즉시 확인")
+st.caption("경과일 180일 이상 거래처 | ⚠️ = 정정전표 있어 잔액 검증 필요")
+
+if not aging_df.empty and "경과일" in aging_df.columns:
+    long_overdue = aging_df[
+        (aging_df["잔액"] > 0) & (aging_df["경과일"].notna()) & (aging_df["경과일"] >= 180)
+    ].sort_values("경과일", ascending=False).head(10)
+
+    if not long_overdue.empty:
+        for _, row in long_overdue.iterrows():
+            days = int(row["경과일"])
+            bal = fmt_krw(row["잔액"])
+            corr = " ⚠️정정전표" if row.get("정정전표", False) else ""
+            악성amt = row.get("악성(91+)", 0)
+            악성_txt = f" | 91일+ {fmt_krw(악성amt)}" if 악성amt > 0 else ""
+            st.error(f"🔴 **{row['거래처']}**{corr} — 잔액 {bal} | 마지막 입금 {days}일 전{악성_txt}")
+    else:
+        st.success("✅ 180일 이상 경과 거래처 없음")
 
 # ── 집중도 경보 ──────────────────────────────────────────────────────────
 st.markdown("---")
@@ -150,15 +180,42 @@ with col_ratio:
     for label, amount in aging_summary.items():
         st.markdown(f"{icons[label]} **{label}**: {fmt_krw(amount)}")
 
-# ── 거래처별 회수율 · DSO · 회수수단 ────────────────────────────────────
+# ── 거래처별 현황 (경과일 정렬) ──────────────────────────────────────────
 st.markdown("---")
-st.subheader("📊 거래처별 회수율 · 평균회수일(DSO) · 회수수단")
+st.subheader("📊 거래처별 현황 (마지막 입금 경과일 순)")
+st.caption("⚠️ = 정정전표 있는 거래처 — 잔액·회수율은 참고용 | ERP 대조 후 확정")
 
-# 회수수단 분석 (현금/어음수취/대손상각)
+if not aging_df.empty:
+    sort_df = aging_df.copy()
+    if "경과일" in sort_df.columns:
+        sort_df = sort_df.sort_values("경과일", ascending=False, na_position="last")
+
+    display_aging = sort_df.copy()
+    for col in ["잔액", "정상(0-30)", "주의(31-60)", "경고(61-90)", "악성(91+)"]:
+        if col in display_aging.columns:
+            display_aging[col] = display_aging[col].apply(fmt_krw)
+    if "경과일" in display_aging.columns:
+        display_aging["경과일"] = display_aging["경과일"].apply(
+            lambda v: f"{int(v)}일" if pd.notna(v) else "—"
+        )
+    if "마지막입금일" in display_aging.columns:
+        display_aging["마지막입금일"] = display_aging["마지막입금일"].apply(
+            lambda v: str(v) if pd.notna(v) else "—"
+        )
+    if "정정전표" in display_aging.columns:
+        display_aging["정정전표"] = display_aging["정정전표"].apply(lambda v: "⚠️" if v else "")
+
+    show_cols = [c for c in ["거래처", "잔액", "악성(91+)", "경과일", "마지막입금일", "정정전표",
+                              "주의(31-60)", "경고(61-90)", "정상(0-30)"] if c in display_aging.columns]
+    st.dataframe(display_aging[show_cols], use_container_width=True, hide_index=True, height=400)
+
+# ── 거래처별 회수율 · DSO (참고용) ────────────────────────────────────────
+st.markdown("---")
+st.subheader("📊 거래처별 회수율 · DSO (참고용 *)")
+st.caption("⚠️ ERP 대조 완료 전까지 회수율·DSO는 정정전표로 인해 부정확할 수 있습니다.")
+
 if not summary_df.empty:
     coll_df = extract_ar_collections(df)
-
-    # 거래처별 회수수단 집계
     수단_pivot = pd.DataFrame()
     if not coll_df.empty:
         coll_grp = coll_df.groupby(["거래처", "수단"])["회수액"].sum().unstack(fill_value=0).reset_index()
@@ -170,54 +227,57 @@ if not summary_df.empty:
         if r >= 80: return "🟡 주의"
         return "🔴 위험"
 
-    # DSO 내림차순 (회수 느린 순)
-    display_summary = summary_df.sort_values("DSO(일)", ascending=False, na_position="last").copy()
+    display_summary = summary_df.copy()
+    if "경과일" in display_summary.columns:
+        display_summary = display_summary.sort_values("경과일", ascending=False, na_position="last")
+    else:
+        display_summary = display_summary.sort_values("DSO(일)", ascending=False, na_position="last")
+
     display_summary["위험도"] = display_summary.apply(recovery_badge, axis=1)
     display_summary["발생액"] = display_summary["발생액"].apply(fmt_krw)
     display_summary["회수액"] = display_summary["회수액"].apply(fmt_krw)
     display_summary["잔액"] = display_summary["잔액"].apply(fmt_krw)
-    display_summary["회수율(%)"] = display_summary["회수율(%)"].apply(lambda v: f"{v:.1f}%")
-    display_summary["DSO(일)"] = display_summary["DSO(일)"].apply(
+    display_summary["회수율(%) *"] = display_summary["회수율(%)"].apply(lambda v: f"{v:.1f}%")
+    display_summary["DSO(일) *"] = display_summary["DSO(일)"].apply(
         lambda v: f"{v}일" if pd.notna(v) else "—"
     )
+    if "정정전표" in display_summary.columns:
+        display_summary["정정전표"] = display_summary["정정전표"].apply(lambda v: "⚠️" if v else "")
+    if "경과일" in display_summary.columns:
+        display_summary["경과일"] = display_summary["경과일"].apply(
+            lambda v: f"{int(v)}일" if pd.notna(v) else "—"
+        )
 
-    # 어음수취 비중 추가
     if not 수단_pivot.empty and "어음수취" in 수단_pivot.columns:
         어음_map = 수단_pivot.set_index("거래처")["어음수취"].to_dict()
         display_summary["어음수취"] = display_summary["거래처"].map(
             lambda g: fmt_krw(어음_map.get(g, 0)) if 어음_map.get(g, 0) > 0 else "—"
         )
-        show_cols = ["거래처", "발생액", "회수액", "잔액", "회수율(%)", "DSO(일)", "어음수취", "위험도"]
+        show_cols = ["거래처", "발생액", "회수액", "잔액", "회수율(%) *", "DSO(일) *",
+                     "경과일", "어음수취", "정정전표", "위험도"]
     else:
-        show_cols = ["거래처", "발생액", "회수액", "잔액", "회수율(%)", "DSO(일)", "위험도"]
+        show_cols = ["거래처", "발생액", "회수액", "잔액", "회수율(%) *", "DSO(일) *",
+                     "경과일", "정정전표", "위험도"]
 
-    st.dataframe(
-        display_summary[show_cols],
-        use_container_width=True, hide_index=True, height=380,
-    )
-    st.caption(
-        "DSO = 발생일~현금회수일 FIFO 가중평균 | "
-        "어음수취 = 현금화 전 받을어음 (미수취급 주의) | "
-        "회수율·잔액은 창업일부터 선택월까지 전체 누적 기준"
-    )
+    show_cols = [c for c in show_cols if c in display_summary.columns]
+    st.dataframe(display_summary[show_cols], use_container_width=True, hide_index=True, height=380)
+    st.caption("* ERP 대조 완료 전 참고용 | ⚠️ = 정정전표 있는 거래처")
 else:
     st.info("회수율 데이터 없음")
 
-# ── 거래처별 실제 결제 기간 분석 (여신 관리) ─────────────────────────────
+# ── 거래처별 실제 결제 기간 분석 ─────────────────────────────────────────
 st.markdown("---")
 st.subheader("📐 거래처별 실제 결제 기간 분석")
-st.caption("FIFO 매칭으로 각 발생 건이 실제로 회수까지 얼마나 걸렸는지 추적 | '2달 여신'이 실제로 지켜지는지 확인")
+st.caption("FIFO 매칭으로 각 발생 건이 실제로 회수까지 얼마나 걸렸는지 추적")
 
 with st.spinner("결제 패턴 분석 중..."):
     pattern_df = calc_payment_pattern(df)
 
 if not pattern_df.empty:
-    # 블랙리스트 필터
     if hide_blacklist:
         bl_set = set(get_blacklist())
         pattern_df = pattern_df[~pattern_df["거래처"].isin(bl_set)]
 
-    # 요약 테이블
     display_pat = pattern_df.copy()
     display_pat["발생액"] = display_pat["발생액"].apply(fmt_krw)
     display_pat["잔액"] = display_pat["잔액"].apply(fmt_krw)
@@ -225,9 +285,7 @@ if not pattern_df.empty:
     display_pat["평균결제일"] = display_pat["평균결제일"].apply(lambda v: f"{v}일")
     display_pat["권장여신(일)"] = display_pat["권장여신(일)"].apply(lambda v: f"{v}일")
 
-    # 결제 기간 분포 막대 (가로)
     st.markdown("**거래처별 결제기간 분포 (금액 기준 가중평균)**")
-
     fig_pat = go.Figure()
     colors = {"30일이내(%)": "#4ade80", "31-60일(%)": "#fbbf24",
               "61-90일(%)": "#fb923c", "91일이상(%)": "#f87171"}
@@ -254,34 +312,24 @@ if not pattern_df.empty:
     )
     st.plotly_chart(fig_pat, use_container_width=True)
 
-    # 상세 테이블
     with st.expander("📋 거래처별 결제기간 상세 테이블"):
         show_cols = ["거래처", "발생액", "잔액", "회수율(%)",
                      "평균결제일", "최소결제일", "최대결제일",
-                     "30일이내(%)", "31-60일(%)", "61-90일(%)", "91일이상(%)",
-                     "권장여신(일)"]
+                     "30일이내(%)", "31-60일(%)", "61-90일(%)", "91일이상(%)", "권장여신(일)"]
         st.dataframe(display_pat[show_cols], use_container_width=True, hide_index=True)
 
-    # 여신 초과 경보
     st.markdown("**⚠️ 권장 여신기간 vs 현황**")
     for _, row in pattern_df.iterrows():
         avg = row["평균결제일"]
         rec = row["권장여신(일)"]
         pct_over = row["91일이상(%)"]
-
         if pct_over >= 20:
-            icon = "🔴"
-            msg = f"91일 초과 비중 {pct_over:.0f}% — 여신 조건 재협의 필요"
+            icon, msg = "🔴", f"91일 초과 비중 {pct_over:.0f}% — 여신 조건 재협의 필요"
         elif avg > 60:
-            icon = "🟡"
-            msg = f"평균 {avg}일 결제 — 여신 기준 재확인 필요"
+            icon, msg = "🟡", f"평균 {avg}일 결제 — 여신 기준 재확인 필요"
         else:
-            icon = "🟢"
-            msg = f"평균 {avg}일 정상"
-
-        st.markdown(
-            f"{icon} **{row['거래처']}** — 평균 {avg}일, 권장여신 {rec}일 | {msg}"
-        )
+            icon, msg = "🟢", f"평균 {avg}일 정상"
+        st.markdown(f"{icon} **{row['거래처']}** — 평균 {avg}일, 권장여신 {rec}일 | {msg}")
 else:
     st.info("결제 패턴 데이터가 없습니다.")
 
@@ -305,10 +353,7 @@ if not bills_by_partner.empty:
         bills_display = bills_by_partner.copy()
         bills_display["어음수취액"] = bills_display["어음수취액"].apply(fmt_krw)
         st.dataframe(bills_display, use_container_width=True, hide_index=True)
-    st.caption(
-        f"💡 전체 어음 잔액 {fmt_krw(total_bills)} — "
-        "어음이 현금화되면 보통예금(103) 입금, 부도 시 대손처리 필요"
-    )
+    st.caption(f"💡 전체 어음 잔액 {fmt_krw(total_bills)} — 어음이 현금화되면 보통예금(103) 입금, 부도 시 대손처리 필요")
 else:
     col_b2.info("어음 거래 없음")
 
@@ -338,12 +383,21 @@ search = st.text_input("거래처 검색", placeholder="거래처명 입력...")
 filtered = aging_df.copy()
 if search:
     filtered = filtered[filtered["거래처"].str.contains(search, na=False)]
+if "경과일" in filtered.columns:
+    filtered = filtered.sort_values("경과일", ascending=False, na_position="last")
 
-display_aging = filtered.copy()
+display_aging2 = filtered.copy()
 for col in ["잔액", "정상(0-30)", "주의(31-60)", "경고(61-90)", "악성(91+)"]:
-    display_aging[col] = display_aging[col].apply(fmt_krw)
+    if col in display_aging2.columns:
+        display_aging2[col] = display_aging2[col].apply(fmt_krw)
+if "경과일" in display_aging2.columns:
+    display_aging2["경과일"] = display_aging2["경과일"].apply(lambda v: f"{int(v)}일" if pd.notna(v) else "—")
+if "마지막입금일" in display_aging2.columns:
+    display_aging2["마지막입금일"] = display_aging2["마지막입금일"].apply(lambda v: str(v) if pd.notna(v) else "—")
+if "정정전표" in display_aging2.columns:
+    display_aging2["정정전표"] = display_aging2["정정전표"].apply(lambda v: "⚠️" if v else "")
 
-st.dataframe(display_aging, use_container_width=True, hide_index=True, height=400)
+st.dataframe(display_aging2, use_container_width=True, hide_index=True, height=400)
 
 # ── 다음 달 채권 관리 포인트 ────────────────────────────────────────────
 st.markdown("---")
@@ -359,13 +413,12 @@ if 집중도 >= 50 and conc["상위5"]:
 주의금액 = aging_df["주의(31-60)"].sum()
 if 주의금액 > 5e7:
     actions.append(f"📞 주의 구간(31~60일) {fmt_krw(주의금액)} — 연체 전환 방지 연락")
-
-if not summary_df.empty:
+if not summary_df.empty and "회수율(%)" in summary_df.columns:
     위험업체 = summary_df[summary_df["회수율(%)"] < 80]
     if not 위험업체.empty:
         업체명 = 위험업체.iloc[0]["거래처"]
         회수율 = 위험업체.iloc[0]["회수율(%)"]
-        actions.append(f"⚠️ **{업체명}** 등 회수율 {회수율:.1f}% 미만 — 결제 조건 재검토")
+        actions.append(f"⚠️ **{업체명}** 등 회수율 {회수율:.1f}% 미만 (ERP 대조 후 확정)")
 
 if not actions:
     actions.append("✅ 특별한 긴급 항목 없음")

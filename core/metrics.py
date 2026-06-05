@@ -166,6 +166,26 @@ def _apply_cost_bucket(df: pd.DataFrame) -> pd.Series:
     )
 
 
+def 보통예금_이자이체(df: pd.DataFrame) -> float:
+    """이자비용 = 103 보통예금 실제 이체 기준.
+
+    같은 전표에 931(이자비용) 차변 + 103(보통예금) 대변이 함께 있는 경우만 합산.
+    위하고에 931 전표가 일부만 기장되는 문제(236만 vs 실제 7,570만)를 해결.
+    """
+    if "전표번호" not in df.columns:
+        return df[df["계정코드"].astype(str) == "931"]["차변"].sum()
+
+    total = 0.0
+    for vno, grp in df.groupby("전표번호"):
+        has_931 = ((grp["계정코드"].astype(str) == "931") & (grp["차변"] > 0)).any()
+        if not has_931:
+            continue
+        bank_out = grp[(grp["계정코드"].astype(str) == "103") & (grp["대변"] > 0)]["대변"].sum()
+        if bank_out > 0:
+            total += bank_out
+    return total
+
+
 def calc_kpi(df: pd.DataFrame) -> dict:
     """핵심 KPI 계산 (CLAUDE.md §5 기준)."""
     # 매출액: Code 404 대변 (반드시 404만 — §5 명시)
@@ -236,8 +256,8 @@ def calc_kpi(df: pd.DataFrame) -> dict:
     영업이익_v7 = 매출액 - 원재료순 - 부재료매입 - 운영비_기타
     영업이익률_v7 = round((영업이익_v7 / 매출액 * 100) if 매출액 > 0 else 0, 2)
 
-    # 이자비용 (Code 931)
-    이자비용 = df[df["계정코드"].astype(str) == "931"]["차변"].sum()
+    # 이자비용 — 보통예금 실제 이체 기준 (931 단독보다 훨씬 정확)
+    이자비용 = 보통예금_이자이체(df)
 
     # 영업외수익
     # 901 이자수익: 반복성 / 914 유형자산처분이익·923 국고보조금·924 법인세환급: 일회성
@@ -299,48 +319,58 @@ def calc_cost_detail(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def calc_health_score(current: dict, prev: Optional[dict] = None) -> dict:
-    """건강점수 100점 + 4대 리스크 (CLAUDE.md §9).
+def calc_health_score(
+    current: dict,
+    prev: Optional[dict] = None,
+    prev_prev: Optional[dict] = None,
+) -> dict:
+    """건강점수 100점 + 4대 리스크 (CLAUDE.md §12 수정 기준).
 
-    prev가 None이면 기준월 — 점수 계산 없이 baseline 표시.
+    - 영업이익률 < 0: 무조건 -25점 + 총점 70점 상한
+    - 전월 대비 하락: -7점
+    - 3개월 연속 하락: -3점 추가 (prev_prev 제공 시)
     """
     if prev is None:
         return {
             "총점": None,
             "리스크": {
-                "마진잠식": {"점수": None, "상태": "baseline", "사유": "기준월 (비교 데이터 없음)"},
-                "대손결운": {"점수": None, "상태": "baseline", "사유": "기준월 (비교 데이터 없음)"},
-                "자금경색": {"점수": None, "상태": "baseline", "사유": "기준월 (비교 데이터 없음)"},
-                "집중리스크": {"점수": None, "상태": "baseline", "사유": "기준월 (비교 데이터 없음)"},
+                "마진잠식": {"점수": None, "만점": 35, "상태": "baseline", "사유": "기준월 (비교 데이터 없음)"},
+                "대손결운": {"점수": None, "만점": 25, "상태": "baseline", "사유": "기준월 (비교 데이터 없음)"},
+                "자금경색": {"점수": None, "만점": 20, "상태": "baseline", "사유": "기준월 (비교 데이터 없음)"},
+                "집중리스크": {"점수": None, "만점": 20, "상태": "baseline", "사유": "기준월 (비교 데이터 없음)"},
             },
             "is_baseline": True,
         }
 
+    def _margin(kpi):
+        return kpi.get("영업이익률_v7", kpi.get("영업이익률", 0))
+
     scores = {}
     reasons = {}
 
-    # 1. 마진잠식 (35점)
-    margin_diff = current["영업이익률"] - prev["영업이익률"]
-    labor_diff = current["인건비율"] - prev["인건비율"]
+    # 1. 마진잠식 (35점) — 절대값 기준 + 전월 대비 하락
+    cur_margin = _margin(current)
+    prev_margin = _margin(prev)
     margin_score = 35
-    margin_reason = "정상"
-    if margin_diff < -5:
-        margin_score -= 20
-        margin_reason = f"영업이익률 전월비 {margin_diff:+.1f}%p 하락"
-    elif margin_diff < -2:
-        margin_score -= 10
-        margin_reason = f"영업이익률 전월비 {margin_diff:+.1f}%p 하락"
-    elif margin_diff < 0:
-        margin_score -= 5
-        margin_reason = f"영업이익률 전월비 {margin_diff:+.1f}%p 소폭 하락"
-    if labor_diff > 3:
-        margin_score -= 10
-        margin_reason += f" / 인건비율 {labor_diff:+.1f}%p 상승"
-    elif labor_diff > 1:
-        margin_score -= 5
-        margin_reason += f" / 인건비율 {labor_diff:+.1f}%p 상승"
+    margin_parts = []
+
+    if cur_margin < 0:
+        margin_score -= 25
+        margin_parts.append(f"영업적자 {cur_margin:.1f}%")
+
+    margin_diff = cur_margin - prev_margin
+    if margin_diff < 0:
+        margin_score -= 7
+        margin_parts.append(f"전월비 {margin_diff:+.1f}%p 하락")
+
+    if prev_prev is not None:
+        prev_prev_margin = _margin(prev_prev)
+        if prev_margin < prev_prev_margin:
+            margin_score -= 3
+            margin_parts.append("3개월 연속 하락")
+
     scores["마진잠식"] = max(0, margin_score)
-    reasons["마진잠식"] = margin_reason if margin_reason != "정상" else "영업이익률·인건비율 전월 수준 유지"
+    reasons["마진잠식"] = " / ".join(margin_parts) if margin_parts else "영업이익률 정상"
 
     # 2. 대손결운 (25점)
     ar_diff = current.get("악성미수비중", 0) - prev.get("악성미수비중", 0)
@@ -379,6 +409,9 @@ def calc_health_score(current: dict, prev: Optional[dict] = None) -> dict:
     reasons["집중리스크"] = conc_reason if conc_reason != "정상" else f"집중도 {conc:.1f}% 양호"
 
     총점 = sum(scores.values())
+    # 영업 적자이면 총점 70점 이하 강제
+    if cur_margin < 0:
+        총점 = min(총점, 70)
 
     def status(s, max_s):
         ratio = s / max_s
