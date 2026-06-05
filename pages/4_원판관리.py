@@ -131,41 +131,69 @@ else:
     if "두께" in price_df.columns and "원_m2" in price_df.columns:
         st.markdown("---")
         st.subheader("📊 두께별 평균 단가 (원/㎡)")
+        st.caption("같은 두께의 모든 사이즈를 통합한 거래처별 평균 — 사이즈 무관")
+
         avg_by_thick = (
-            price_df.groupby(["두께", "거래처"])["원_m2"]
+            price_df[price_df["원_m2"] > 0]
+            .groupby(["두께", "거래처"])["원_m2"]
             .mean()
             .reset_index()
             .sort_values("두께")
-        ) if "거래처" in price_df.columns else price_df.groupby("두께")["원_m2"].mean().reset_index()
+        ) if "거래처" in price_df.columns else (
+            price_df[price_df["원_m2"] > 0]
+            .groupby("두께")["원_m2"].mean().reset_index()
+        )
 
-        colors_map = {"KCC글라스": "#60a5fa", "LX글라스": "#34d399",
-                      "한유에스앤지": "#fbbf24", "한성유엔씨": "#f87171"}
+        # 거래처명 부분 매칭으로 색상 결정
+        VENDOR_PALETTE = [
+            "#60a5fa",  # 파란색
+            "#34d399",  # 녹색
+            "#fbbf24",  # 노란색
+            "#f87171",  # 빨간색
+            "#a78bfa",  # 보라색
+            "#fb923c",  # 주황색
+        ]
+        vendors_sorted = sorted(avg_by_thick["거래처"].unique()) if "거래처" in avg_by_thick.columns else []
+        vendor_color = {v: VENDOR_PALETTE[i % len(VENDOR_PALETTE)]
+                        for i, v in enumerate(vendors_sorted)}
 
         fig = go.Figure()
         if "거래처" in avg_by_thick.columns:
-            for vendor in avg_by_thick["거래처"].unique():
+            for vendor in vendors_sorted:
                 sub = avg_by_thick[avg_by_thick["거래처"] == vendor]
+                if sub.empty:
+                    continue
                 fig.add_trace(go.Bar(
                     name=vendor,
                     x=sub["두께"].astype(str) + "mm",
                     y=sub["원_m2"],
-                    marker_color=colors_map.get(vendor, "#94a3b8"),
-                    text=sub["원_m2"].apply(lambda v: f"{v:,.0f}"),
+                    marker_color=vendor_color[vendor],
+                    text=sub["원_m2"].apply(lambda v: f"{v:,.0f}원"),
                     textposition="outside",
+                    textfont=dict(size=11),
                 ))
         else:
             fig.add_trace(go.Bar(
                 x=avg_by_thick["두께"].astype(str) + "mm",
                 y=avg_by_thick["원_m2"],
                 marker_color="#60a5fa",
+                text=avg_by_thick["원_m2"].apply(lambda v: f"{v:,.0f}원"),
+                textposition="outside",
             ))
 
         fig.update_layout(
             barmode="group",
-            xaxis_title="두께", yaxis_title="원/㎡",
-            height=320, margin=dict(t=20, b=40),
+            xaxis_title="두께 (mm)",
+            yaxis=dict(
+                title="원/㎡",
+                tickformat=",.0f",
+                ticksuffix="원",
+            ),
+            height=380,
+            margin=dict(t=20, b=40),
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             font=dict(color="white"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         )
         st.plotly_chart(fig, use_container_width=True)
 
