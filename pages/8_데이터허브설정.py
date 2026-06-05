@@ -365,8 +365,14 @@ with tab5:
             sheets = xl.sheet_names
             st.success(f"파일 읽기 완료 — 시트 {len(sheets)}개: {', '.join(sheets)}")
 
+            # 데이터 시트 아닌 것 스킵 키워드 (루프 시작 전 체크)
+            SKIP_KEYWORDS = ["summary", "summay", "수불", "기준", "년간", "월간", "kgt"]
+
             all_price_rows = []
             for sheet in sheets:
+                # try 전에 스킵 — 파싱 시도 자체를 막음
+                if any(k in sheet.lower() for k in SKIP_KEYWORDS):
+                    continue
                 try:
                     df_s = xl.parse(sheet, header=None)
                     # 헤더 행 탐색 (가로/폭/세로 등 컬럼명 포함 행)
@@ -384,12 +390,6 @@ with tab5:
                     # 원산지 필터링 (원산지 문자열 포함 행 제외)
                     if "원산지" in df_s.columns:
                         df_s = df_s[~df_s["원산지"].astype(str).str.contains("원산지", na=False)]
-
-                    # 거래처 시트에 해당하는 것만 처리 (Summary/수불용/기준 시트 제외)
-                    SKIP_SHEETS = {"summary", "summay", "수불용", "기준"}
-                    if sheet.lower().replace("_", "").replace(" ", "") in SKIP_SHEETS or \
-                       any(k in sheet.lower() for k in ["summary", "summay", "수불", "기준"]):
-                        continue
 
                     # 단가 계산
                     for _, r in df_s.iterrows():

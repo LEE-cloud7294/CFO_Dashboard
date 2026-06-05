@@ -227,5 +227,104 @@ if not summary_all.empty:
 else:
     st.info("수불 집계 데이터 없음 — 데이터 허브에서 원판 데이터를 업로드하세요.")
 
+# ── 거래처별 일자별 상세 ─────────────────────────────────────────────────
+st.markdown("---")
+st.subheader("📋 거래처별 일자별 구매 상세")
+st.caption("전체 저장된 데이터 기준 | 연월 · 거래처 · 두께 필터 적용 가능")
+
+@st.cache_data(ttl=600)
+def load_all_price_data(ym_list: list) -> pd.DataFrame:
+    """전체 연월 단가 데이터 합산 로드."""
+    frames = []
+    for y, m in ym_list:
+        df_tmp = load_raw_material_price(y, m)
+        if not df_tmp.empty:
+            frames.append(df_tmp)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+all_price_df = load_all_price_data(avail_months)
+
+if all_price_df.empty:
+    st.info("상세 데이터 없음")
+else:
+    # 필터 UI
+    fcol1, fcol2, fcol3 = st.columns(3)
+
+    # 연월 필터
+    ym_all = sorted(set(f"{r['year']}-{str(r['month']).zfill(2)}"
+                        for _, r in all_price_df.iterrows()
+                        if "year" in all_price_df.columns and "month" in all_price_df.columns),
+                    reverse=True)
+    sel_ym_detail = fcol1.selectbox("연월", ["전체"] + ym_all, key="detail_ym")
+
+    # 거래처 필터
+    vendors_all = sorted(all_price_df["거래처"].dropna().unique()) if "거래처" in all_price_df.columns else []
+    sel_vendor_detail = fcol2.selectbox("거래처", ["전체"] + vendors_all, key="detail_vendor")
+
+    # 두께 필터
+    thick_all = sorted([int(v) for v in all_price_df["두께"].dropna().unique()
+                        if str(v).replace(".0","").isdigit()]) if "두께" in all_price_df.columns else []
+    thick_opts = [str(t) + "mm" for t in thick_all]
+    sel_thick = fcol3.selectbox("두께", ["전체"] + thick_opts, key="detail_thick")
+
+    detail_df = all_price_df.copy()
+
+    if sel_ym_detail != "전체":
+        y_f, m_f = sel_ym_detail[:4], sel_ym_detail[5:7]
+        detail_df = detail_df[
+            (detail_df["year"].astype(str) == y_f) &
+            (detail_df["month"].astype(str).str.zfill(2) == m_f)
+        ]
+    if sel_vendor_detail != "전체" and "거래처" in detail_df.columns:
+        detail_df = detail_df[detail_df["거래처"] == sel_vendor_detail]
+    if sel_thick != "전체" and "두께" in detail_df.columns:
+        t_val = int(sel_thick.replace("mm", ""))
+        detail_df = detail_df[detail_df["두께"] == t_val]
+
+    # 정렬: 연월 → 거래처 → 일자
+    sort_cols = [c for c in ["year", "month", "거래처", "일자", "두께"] if c in detail_df.columns]
+    if sort_cols:
+        detail_df = detail_df.sort_values(sort_cols)
+
+    # 표시용 가공
+    detail_disp = detail_df.copy()
+    if "금액_원" in detail_disp.columns:
+        detail_disp["금액"] = detail_disp["금액_원"].apply(fmt_krw)
+    if "원_m2" in detail_disp.columns:
+        detail_disp["원/㎡"] = detail_disp["원_m2"].apply(lambda v: f"{v:,.0f}" if v else "—")
+    if "원_평" in detail_disp.columns:
+        detail_disp["원/평"] = detail_disp["원_평"].apply(lambda v: f"{v:,.0f}" if v else "—")
+    if "면적_m2" in detail_disp.columns:
+        detail_disp["면적(㎡)"] = detail_disp["면적_m2"].apply(lambda v: f"{v:.3f}" if v else "—")
+
+    # 연월 컬럼 합산
+    if "year" in detail_disp.columns and "month" in detail_disp.columns:
+        detail_disp["연월"] = detail_disp["year"].astype(str) + "-" + detail_disp["month"].astype(str).str.zfill(2)
+
+    show_cols = [c for c in ["연월", "거래처", "원산지", "두께", "규격자", "규격mm",
+                              "일자", "면적(㎡)", "금액", "원/㎡", "원/평", "오기여부"]
+                 if c in detail_disp.columns]
+
+    st.dataframe(detail_disp[show_cols], use_container_width=True, hide_index=True,
+                 height=min(400, max(200, len(detail_disp) * 36 + 40)))
+
+    # 거래처별 합산 소계
+    if not detail_df.empty and "거래처" in detail_df.columns and "금액_원" in detail_df.columns:
+        st.markdown("**거래처별 합산**")
+        subtotal = (
+            detail_df.groupby("거래처")["금액_원"]
+            .sum()
+            .sort_values(ascending=False)
+            .reset_index()
+        )
+        subtotal["금액"] = subtotal["금액_원"].apply(fmt_krw)
+        if "원_m2" in detail_df.columns:
+            avg_price = detail_df.groupby("거래처")["원_m2"].mean().round(0).astype(int)
+            subtotal["평균원/㎡"] = subtotal["거래처"].map(avg_price).apply(
+                lambda v: f"{v:,}" if pd.notna(v) else "—"
+            )
+        st.dataframe(subtotal[[c for c in ["거래처", "금액", "평균원/㎡"] if c in subtotal.columns]],
+                     use_container_width=True, hide_index=True)
+
 st.markdown("---")
 st.caption("💡 **다음달 챙길 일** — 단가 10% 이상 변동 품목 확인, 재고 적정 수준 유지")

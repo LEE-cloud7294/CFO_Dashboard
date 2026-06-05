@@ -383,11 +383,12 @@ def load_raw_material_price(year: str, month: str) -> pd.DataFrame:
 
 
 def upsert_raw_material_summary(data: dict, year: str, month: str) -> None:
-    """원판 월별 수불 집계 저장 (upsert)."""
+    """원판 월별 수불 집계 저장 (같은 연월 덮어쓰기)."""
     client = get_client()
     try:
-        data_with_ym = {**data, "year": year, "month": month}
-        client.table("raw_material_summary").upsert(data_with_ym).execute()
+        client.table("raw_material_summary").delete().eq("year", year).eq("month", month).execute()
+        data_with_ym = {**data, "year": str(year), "month": str(month)}
+        client.table("raw_material_summary").insert(data_with_ym).execute()
     except Exception as e:
         raise RuntimeError(f"raw_material_summary 저장 실패: {e}")
 
