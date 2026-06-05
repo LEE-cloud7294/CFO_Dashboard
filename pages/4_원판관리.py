@@ -66,8 +66,20 @@ def load_summary_data():
     return load_raw_material_summary()
 
 
+@st.cache_data(ttl=600)
+def load_all_price_data(ym_list: list) -> pd.DataFrame:
+    """전체 연월 단가 데이터 합산 로드."""
+    frames = []
+    for y, m in ym_list:
+        df_tmp = load_raw_material_price(y, m)
+        if not df_tmp.empty:
+            frames.append(df_tmp)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 price_df = load_price_data(sel_year, sel_month)
 summary_all = load_summary_data()
+all_price_df = load_all_price_data(avail_months)   # 전체 기간 — 추이·상세에서 공유
 
 # ── 상단 집계 카드 ────────────────────────────────────────────────────────
 st.markdown("---")
@@ -367,18 +379,6 @@ else:
 st.markdown("---")
 st.subheader("📋 거래처별 일자별 구매 상세")
 st.caption("전체 저장된 데이터 기준 | 연월 · 거래처 · 두께 필터 적용 가능")
-
-@st.cache_data(ttl=600)
-def load_all_price_data(ym_list: list) -> pd.DataFrame:
-    """전체 연월 단가 데이터 합산 로드."""
-    frames = []
-    for y, m in ym_list:
-        df_tmp = load_raw_material_price(y, m)
-        if not df_tmp.empty:
-            frames.append(df_tmp)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-all_price_df = load_all_price_data(avail_months)
 
 if all_price_df.empty:
     st.info("상세 데이터 없음")
