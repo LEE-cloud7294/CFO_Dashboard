@@ -191,14 +191,21 @@ if annual_dep > 0:
 
 # ── 자금경색 자동 계산 ────────────────────────────────────────────────────
 # 이달 보통예금(103) 입금 총액 = 현금 유입 근사치
-cash_103 = df[df["계정코드"].astype(str) == "103"]
-월중입금 = cash_103["차변"].sum()
-예상고정비 = 총인건비 + 이자비용   # 급여+퇴직+4대보험+이자 = 최소 고정 지출
-
-cash_data = {"월중입금": 월중입금, "예상고정비": 예상고정비}
+try:
+    cash_103 = df[df["계정코드"].astype(str) == "103"]
+    cash_data = {
+        "월중입금": float(cash_103["차변"].sum()),
+        "예상고정비": float(총인건비 + 이자비용),
+    }
+except Exception:
+    cash_data = None
 
 # ── 건강점수 계산 ─────────────────────────────────────────────────────────
-health = calc_health_score(kpi, prev_kpi, cash_data=cash_data)
+try:
+    health = calc_health_score(kpi, prev_kpi, cash_data=cash_data)
+except TypeError:
+    # cash_data 파라미터 미지원 구버전 호환
+    health = calc_health_score(kpi, prev_kpi)
 
 # ── 헤더 ──────────────────────────────────────────────────────────────────
 st.markdown("---")
