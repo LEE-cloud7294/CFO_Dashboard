@@ -502,10 +502,11 @@ with tab5:
                     "기말재고_매": 0, "기말재고_금액": 0}
             parse_log = []
 
-            # 원판매입.사용현황 시트: col2 고정, 행 인덱스 기반
-            # 행5=입고매, 9=입고금액, 10=사용매, 14=사용금액
-            # 행15=기초재고매, 19=기초재고금액, 20=기말재고매, 24=기말재고금액
-            ROW_MAP = {
+            # 원판매입.사용현황 시트 구조 (파일 직접 분석 결과):
+            # ROW 2가 합계 행, 각 항목이 서로 다른 컬럼에 위치
+            # col5=입고매, col9=입고금액, col10=사용매, col14=사용금액
+            # col15=기초재고매, col19=기초재고금액, col20=기말재고매, col24=기말재고금액
+            COL_MAP = {
                 "당기입고_매":   (5,  True),
                 "당기입고_금액": (9,  False),
                 "당기사용_매":   (10, True),
@@ -516,7 +517,7 @@ with tab5:
                 "기말재고_금액": (24, False),
             }
 
-            # 시트명 탐색: "매입" + "현황" 포함하는 시트 우선
+            # 시트명 탐색: "매입" + "현황" 포함하는 시트 우선 (원판매입.사용현황)
             summary_sh = next(
                 (s for s in sheets2 if "매입" in s and "현황" in s), None
             )
@@ -530,10 +531,10 @@ with tab5:
             if summary_sh:
                 try:
                     df_su = xl2.parse(summary_sh, header=None)
-                    col2 = df_su.iloc[:, 2]  # 모든 값은 컬럼2에 있음
-                    for key, (ridx, is_int) in ROW_MAP.items():
-                        if ridx < len(col2):
-                            v = _safe_float(col2.iloc[ridx])
+                    r2 = df_su.iloc[2].values  # 행 인덱스 2 = 합계 행
+                    for key, (cidx, is_int) in COL_MAP.items():
+                        if cidx < len(r2):
+                            v = _safe_float(r2[cidx])
                             auto[key] = int(v) if is_int else round(v)
                     parse_log.append(
                         f"✅ {summary_sh}: "
