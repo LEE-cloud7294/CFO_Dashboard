@@ -394,20 +394,25 @@ with tab5:
                             continue
                         금액 = _safe_float(vals[CI["금액"]])
                         if 금액 <= 0:
-                            continue  # 빈 행 스킵
+                            continue
+                        # 두께·S1 모두 NaN = 소계 행 → 스킵
+                        두께_raw = vals[CI["두께"]] if len(vals) > CI["두께"] else None
+                        s1_raw   = vals[CI["S1"]]  if len(vals) > CI["S1"]  else None
+                        if pd.isna(두께_raw) and (s1_raw is None or pd.isna(s1_raw)):
+                            continue
 
-                        두께 = _safe_int(vals[CI["두께"]])
-                        s1 = _safe_int(vals[CI["S1"]])
-                        s2 = _safe_int(vals[CI["S2"]])
-                        폭1 = _safe_float(vals[CI["폭1"]])
-                        폭2 = _safe_float(vals[CI["폭2"]])
-                        면적 = _safe_float(vals[CI["면적"]])
-                        원m2 = _safe_float(vals[CI["원m2"]])
-                        원평 = _safe_float(vals[CI["원평"]])
-                        메이커 = str(vals[CI["메이커"]] or "").strip()
-                        제품 = str(vals[CI["제품"]] or "").strip()
-                        일자 = str(vals[CI["일자"]] or "").strip()
-                        매수 = _safe_int(vals[CI["매수"]])
+                        두께 = _safe_int(두께_raw)
+                        s1 = _safe_int(s1_raw)
+                        s2 = _safe_int(vals[CI["S2"]] if len(vals) > CI["S2"] else None)
+                        폭1 = _safe_float(vals[CI["폭1"]] if len(vals) > CI["폭1"] else 0)
+                        폭2 = _safe_float(vals[CI["폭2"]] if len(vals) > CI["폭2"] else 0)
+                        면적 = _safe_float(vals[CI["면적"]] if len(vals) > CI["면적"] else 0)
+                        원m2 = _safe_float(vals[CI["원m2"]] if len(vals) > CI["원m2"] else 0)
+                        원평 = _safe_float(vals[CI["원평"]] if len(vals) > CI["원평"] else 0)
+                        메이커 = str(vals[CI["메이커"]] if len(vals) > CI["메이커"] and pd.notna(vals[CI["메이커"]]) else "").strip()
+                        제품   = str(vals[CI["제품"]]   if len(vals) > CI["제품"]   and pd.notna(vals[CI["제품"]])   else "").strip()
+                        일자   = str(vals[CI["일자"]]   if len(vals) > CI["일자"]   and pd.notna(vals[CI["일자"]])   else "").strip()
+                        매수 = _safe_int(vals[CI["매수"]] if len(vals) > CI["매수"] else None)
 
                         # 규격 문자열
                         규격mm = f"{s1}×{s2}" if s1 and s2 else ""

@@ -353,33 +353,22 @@ RAW_MATERIAL_PRICE_COLUMNS = [
 
 def upsert_raw_material_price(df: pd.DataFrame, year: str, month: str) -> int:
     """원판 단가 데이터를 raw_material_price에 저장 (연월 단위 덮어쓰기)."""
-    import math
+    import json, re
 
-    def _clean(v):
-        """float NaN/inf → None, numpy 타입 → python 기본타입."""
-        if v is None:
-            return None
-        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-            return None
-        # numpy 타입 → python 기본타입
-        try:
-            import numpy as np
-            if isinstance(v, (np.integer,)):
-                return int(v)
-            if isinstance(v, (np.floating,)):
-                return None if math.isnan(float(v)) else float(v)
-            if isinstance(v, (np.bool_,)):
-                return bool(v)
-        except ImportError:
-            pass
-        return v
+    def _to_safe_records(records):
+        """NaN/Infinity/pd.NA 등 JSON 불가 값을 null로 치환."""
+        # allow_nan=True: NaN → 문자열 "NaN", default=str: 나머지 불가 타입 → 문자열
+        s = json.dumps(records, allow_nan=True, default=str)
+        # NaN / Infinity 를 null로 교체
+        s = re.sub(r'\b(NaN|Infinity|-Infinity)\b', 'null', s)
+        return json.loads(s)
 
     client = get_client()
     try:
         client.table("raw_material_price").delete().eq("year", year).eq("month", month).execute()
         send_cols = [c for c in RAW_MATERIAL_PRICE_COLUMNS if c in df.columns]
         raw_records = df[send_cols].to_dict(orient="records")
-        records = [{k: _clean(v) for k, v in r.items()} for r in raw_records]
+        records = _to_safe_records(raw_records)
         batch = 500
         for i in range(0, len(records), batch):
             client.table("raw_material_price").insert(records[i:i+batch]).execute()
