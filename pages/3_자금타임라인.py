@@ -39,27 +39,19 @@ def load_debts_data():
 
 @st.cache_data(ttl=3600)
 def load_interest_history():
-    """931+103 실제 이체 기준 이자비용 월별 추이 — load_journal_code로 속도 개선."""
+    """931(이자비용) 계정 차변 기준 월별 추이.
+
+    과거 "같은 전표번호의 103 대변 합산" 방식은 위하고가 한달치 거래를 하나의
+    전표번호로 묶어 기장하는 특성상 무관한 거래까지 합산되고, 전표번호가 매월
+    00001부터 재시작해 다른 달의 전표끼리 잘못 매칭되는 버그가 있었음.
+    931 계정은 매월 누락 없이 정상 기장되어 있어 직접 합산이 정확함.
+    """
     df931 = load_journal_code("931")
-    df103 = load_journal_code("103")
-    if df931.empty or df103.empty:
+    if df931.empty:
         return pd.DataFrame()
 
     df931["ym"] = df931["전표일자"].dt.strftime("%Y-%m")
-    df103["ym"] = df103["전표일자"].dt.strftime("%Y-%m")
-
-    # 931+103 같은 전표번호 → 이자 이체 금액
-    if "전표번호" not in df931.columns or "전표번호" not in df103.columns:
-        # 전표번호 없으면 931 차변 그대로
-        return df931.groupby("ym")["차변"].sum().reset_index()
-
-    vnos_with_931 = set(df931[df931["차변"] > 0]["전표번호"])
-    matched103 = df103[
-        (df103["전표번호"].isin(vnos_with_931)) & (df103["대변"] > 0)
-    ]
-    if matched103.empty:
-        return df931.groupby("ym")["차변"].sum().reset_index()
-    return matched103.groupby("ym")["대변"].sum().reset_index().rename(columns={"대변": "차변"})
+    return df931[df931["차변"] > 0].groupby("ym")["차변"].sum().reset_index()
 
 
 @st.cache_data(ttl=3600)
