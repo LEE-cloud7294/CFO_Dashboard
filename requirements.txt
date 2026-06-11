@@ -1,7 +1,8 @@
 streamlit>=1.32.0
 pandas>=2.0.0
 plotly>=5.18.0
-supabase>=2.3.0
+supabase==2.10.0
+httpx>=0.26,<0.29
 openpyxl>=3.1.0
 python-calamine>=0.1.7
 pyarrow>=14.0.0
