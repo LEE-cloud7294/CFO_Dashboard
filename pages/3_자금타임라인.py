@@ -70,6 +70,48 @@ def load_capex_history():
     return combined
 
 
+@st.cache_data(ttl=3600)
+def load_tax_payments() -> pd.DataFrame:
+    """부가세·법인세 실제 납부/환급 내역 — 전표 단위 매칭(classify_out) 미사용.
+
+    위하고 월별 묶음전표 특성상 "이 전표에 코드 X가 있는가" 방식은
+    무관한 거래까지 휩쓸려 분류되는 버그가 있음(자금타임라인 출금유형 분류).
+    세금은 정확도가 중요해 계정코드+거래처+적요로 직접 필터링.
+
+    부가세: 135/255 중 거래처가 세무서인 건만 (매 거래마다 찍히는
+            예수금/대급금 전표는 제외) — '상계/절사/끝처리'는 현금흐름
+            없는 내부 정리분개라 제외.
+    법인세: 136/998 중 '대체'(내부 계정대체·연말 손익대체)가 아닌 건만.
+    """
+    rows = []
+    for code in ["135", "255"]:
+        df = load_journal_code(code)
+        if df.empty:
+            continue
+        df = df[df["거래처"].astype(str).str.contains("세무서", na=False)]
+        df = df[~df["적요"].astype(str).str.contains("상계|절사|끝처리", na=False, regex=True)]
+        for _, r in df.iterrows():
+            금액 = r["차변"] if r["차변"] > 0 else -r["대변"]
+            rows.append({"일자": r["전표일자"], "종류": "부가세", "금액": 금액, "적요": r["적요"]})
+
+    for code in ["136", "998"]:
+        df = load_journal_code(code)
+        if df.empty:
+            continue
+        df = df[~df["적요"].astype(str).str.contains("대체", na=False)]
+        for _, r in df.iterrows():
+            금액 = r["차변"] - r["대변"]
+            if abs(금액) < 1:
+                continue
+            rows.append({"일자": r["전표일자"], "종류": "법인세", "금액": 금액, "적요": r["적요"]})
+
+    if not rows:
+        return pd.DataFrame(columns=["일자", "ym", "종류", "금액", "적요"])
+    out = pd.DataFrame(rows).sort_values("일자", ascending=False).reset_index(drop=True)
+    out["ym"] = out["일자"].dt.strftime("%Y-%m")
+    return out
+
+
 @st.cache_data(ttl=300)
 def load_cashflow_detail(ym: str) -> pd.DataFrame:
     """보통예금(103) 월별 입출금 전체 — 계정코드 기반 분류."""
@@ -464,6 +506,42 @@ else:
     st.dataframe(
         recent[["전표일자", "구분", "금액", "거래처", "적요"]].reset_index(drop=True),
         use_container_width=True, hide_index=True,
+        column_config={"금액": st.column_config.NumberColumn("금액", format="localized")},
+    )
+
+st.markdown("---")
+
+# ── 섹션 4.5: 세금 납부 현황 (부가세·법인세) ──────────────────────────────────
+st.header("🧾 세금 납부 현황 (부가세·법인세)")
+st.caption("⚠️ 아래 '월별/연간 출금 유형' 표의 '부가세 납부' 항목은 묶음전표 매칭 한계로 부정확할 수 있습니다 — 여기 수치가 정확한 값입니다.")
+
+tax_df = load_tax_payments()
+if tax_df.empty:
+    st.info("세금 납부 데이터 없음")
+else:
+    vat_total_12m = tax_df[(tax_df["종류"] == "부가세") & (tax_df["일자"] >= pd.Timestamp(today) - pd.Timedelta(days=365))]["금액"].sum()
+    tax_total_12m = tax_df[(tax_df["종류"] == "법인세") & (tax_df["일자"] >= pd.Timestamp(today) - pd.Timedelta(days=365))]["금액"].sum()
+
+    col_t1, col_t2 = st.columns(2)
+    col_t1.metric("최근 12개월 부가세 납부(순)", fmt_krw(vat_total_12m))
+    col_t2.metric("최근 12개월 법인세 납부(순)", fmt_krw(tax_total_12m))
+
+    monthly_tax = tax_df.groupby(["ym", "종류"])["금액"].sum().reset_index()
+    fig_tax = go.Figure()
+    for 종류, color in [("부가세", "#fbbf24"), ("법인세", "#f87171")]:
+        sub = monthly_tax[monthly_tax["종류"] == 종류]
+        fig_tax.add_trace(go.Bar(name=종류, x=sub["ym"], y=sub["금액"] / 1e6, marker_color=color))
+    fig_tax.update_layout(
+        barmode="group", xaxis_title="월", yaxis_title="금액 (백만원)",
+        height=300, margin=dict(t=20, b=40),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="white"),
+    )
+    st.plotly_chart(fig_tax, use_container_width=True)
+
+    show_tax = tax_df[["일자", "종류", "금액", "적요"]].copy()
+    st.dataframe(
+        show_tax, use_container_width=True, hide_index=True, height=300,
         column_config={"금액": st.column_config.NumberColumn("금액", format="localized")},
     )
 
