@@ -365,6 +365,7 @@ if not trend_df.empty and len(trend_df) >= 2:
         60
     )
     fig_trend.update_layout(
+        xaxis=dict(type="category"),
         yaxis=dict(title="매출액 (백만원)", tickformat=",.0f"),
         yaxis2=dict(title="%", overlaying="y", side="right",
                     ticksuffix="%", range=[-25, y2_max]),
