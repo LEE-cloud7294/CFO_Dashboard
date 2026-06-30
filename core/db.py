@@ -152,8 +152,13 @@ def load_journal_upto(ym: str) -> pd.DataFrame:
                            .order("전표일자")
                            .range(offset, offset + page_size - 1)
                            .execute())
-                except Exception:
-                    break
+                except Exception as e:
+                    # 재시도도 실패 시 조용히 누락시키지 않고 명시적 에러 발생
+                    # (매출채권 FIFO는 데이터 누락 시 잔액이 틀리게 계산되므로
+                    #  화면에 "정상처럼 보이는 틀린 숫자"가 뜨는 것보다 에러가 안전함)
+                    raise RuntimeError(
+                        f"매출채권 누적 데이터 로드 실패 (계정 {code_prefix}, offset {offset}): {e}"
+                    ) from e
             if not res.data:
                 break
             all_data.extend(res.data)
