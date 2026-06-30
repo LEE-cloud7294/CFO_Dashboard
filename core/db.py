@@ -35,7 +35,12 @@ def upsert_journal(df: pd.DataFrame, ym: str) -> int:
 
 
 def load_journal(ym: str) -> pd.DataFrame:
-    """특정 월 분개 데이터 로드 (페이지네이션 — 월 2,000행+ 대응)."""
+    """특정 월 분개 데이터 로드 (페이지네이션 — 월 2,000행+ 대응).
+
+    .order("id") 필수 — 정렬키 없이 OFFSET 페이지네이션 시 동률(같은 전표일자
+    등) 행의 순서가 쿼리마다 달라질 수 있어 페이지 경계에서 행이 누락될 수 있음
+    (디에스글라스 매출채권 잔액이 412M→193M로 잘못 표시된 사고의 원인).
+    """
     client = get_client()
     all_data = []
     page_size = 1000
@@ -44,6 +49,7 @@ def load_journal(ym: str) -> pd.DataFrame:
         res = (client.table("journal")
                .select("*")
                .eq("ym", ym)
+               .order("id")
                .range(offset, offset + page_size - 1)
                .execute())
         if not res.data:
@@ -70,9 +76,10 @@ def load_journal_code(code: str) -> pd.DataFrame:
     offset = 0
     while True:
         res = (client.table("journal")
-               .select("ym,전표일자,차변,대변,거래처,적요")
+               .select("id,ym,전표일자,차변,대변,거래처,적요")
                .eq("계정코드", code)
                .order("전표일자")
+               .order("id")
                .range(offset, offset + page_size - 1)
                .execute())
         if not res.data:
@@ -101,6 +108,7 @@ def load_all_journal() -> pd.DataFrame:
         res = (client.table("journal")
                .select("*")
                .order("전표일자")
+               .order("id")
                .range(offset, offset + page_size - 1)
                .execute())
         if not res.data:
@@ -140,6 +148,7 @@ def load_journal_upto(ym: str) -> pd.DataFrame:
                        .like("계정코드", f"{code_prefix}%")
                        .lte("전표일자", end_date)
                        .order("전표일자")
+                       .order("id")
                        .range(offset, offset + page_size - 1)
                        .execute())
             except Exception:
@@ -150,6 +159,7 @@ def load_journal_upto(ym: str) -> pd.DataFrame:
                            .like("계정코드", f"{code_prefix}%")
                            .lte("전표일자", end_date)
                            .order("전표일자")
+                           .order("id")
                            .range(offset, offset + page_size - 1)
                            .execute())
                 except Exception as e:
