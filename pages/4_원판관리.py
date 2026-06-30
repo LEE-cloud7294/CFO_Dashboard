@@ -145,15 +145,22 @@ else:
         disp = disp[disp["거래처"] == sel_vendor]
 
     if "금액_원" in disp.columns:
-        disp["금액"] = disp["금액_원"].apply(fmt_krw)
+        disp["금액"] = disp["금액_원"]
     if "원_평_표시" in disp.columns:
-        disp["원/평"] = disp["원_평_표시"].apply(lambda v: f"{int(v):,}원" if v > 0 else "—")
+        disp["원/평"] = disp["원_평_표시"]
     if "원_m2" in disp.columns:
-        disp["원/㎡"] = disp["원_m2"].apply(lambda v: f"{v:,.0f}원" if v > 0 else "—")
+        disp["원/㎡"] = disp["원_m2"]
 
     show_cols = [c for c in ["거래처", "원산지", "두께", "규격자", "일자", "금액", "원/평", "원/㎡", "오기여부"] if c in disp.columns]
-    st.dataframe(disp[show_cols].sort_values(["두께", "거래처"] if "두께" in disp.columns else []),
-                 use_container_width=True, hide_index=True)
+    st.dataframe(
+        disp[show_cols].sort_values(["두께", "거래처"] if "두께" in disp.columns else []),
+        use_container_width=True, hide_index=True,
+        column_config={
+            "금액": st.column_config.NumberColumn("금액", format="localized"),
+            "원/평": st.column_config.NumberColumn("원/평", format="localized"),
+            "원/㎡": st.column_config.NumberColumn("원/㎡", format="localized"),
+        },
+    )
     st.caption("원/평 = 원/㎡ ÷ 10.764 (유리업계 단위: 평 = 1ft²)")
 
     # 두께별 평균 단가 바차트 — 원/평 기준
@@ -370,10 +377,11 @@ if not summary_all.empty:
                                   "기초재고_매", "기말재고_매"] if c in year_data.columns]
         disp_ann = year_data[disp_cols].copy()
         disp_ann["month"] = disp_ann["month"].apply(lambda m: f"{int(m):02d}월")
-        for col in ["당기입고_금액", "당기사용_금액"]:
-            if col in disp_ann.columns:
-                disp_ann[col] = disp_ann[col].apply(fmt_krw)
-        st.dataframe(disp_ann, use_container_width=True, hide_index=True)
+        money_cols_ann = [c for c in ["당기입고_금액", "당기사용_금액"] if c in disp_ann.columns]
+        st.dataframe(
+            disp_ann, use_container_width=True, hide_index=True,
+            column_config={c: st.column_config.NumberColumn(c, format="localized") for c in money_cols_ann},
+        )
 else:
     st.info("수불 집계 데이터 없음 — 데이터 허브에서 원판 데이터를 업로드하세요.")
 
@@ -430,23 +438,21 @@ else:
     detail_disp["원_평_표시"] = detail_disp.apply(_calc_pyeong, axis=1)
 
     if "금액_원" in detail_disp.columns:
-        detail_disp["금액(부가세제외)"] = detail_disp["금액_원"].apply(fmt_krw)
+        detail_disp["금액(부가세제외)"] = detail_disp["금액_원"]
     detail_disp["부가세(10%)"] = detail_disp.apply(
-        lambda r: fmt_krw(r["부가세_원"]) if r.get("부가세_원", 0) > 0
-                  else fmt_krw(round(r.get("금액_원", 0) * 0.1)), axis=1
+        lambda r: r["부가세_원"] if r.get("부가세_원", 0) > 0
+                  else round(r.get("금액_원", 0) * 0.1), axis=1
     )
     if "합계_원" in detail_disp.columns:
-        detail_disp["합계(부가세포함)"] = detail_disp["합계_원"].apply(
-            lambda v: fmt_krw(v) if pd.notna(v) and v > 0 else "—"
-        )
+        detail_disp["합계(부가세포함)"] = detail_disp["합계_원"]
     elif "금액_원" in detail_disp.columns:
-        detail_disp["합계(부가세포함)"] = detail_disp["금액_원"].apply(lambda v: fmt_krw(round(v * 1.1)))
+        detail_disp["합계(부가세포함)"] = detail_disp["금액_원"].apply(lambda v: round(v * 1.1))
     # 원/평 (보정값), 원/㎡ 모두 표시
-    detail_disp["원/평"] = detail_disp["원_평_표시"].apply(lambda v: f"{int(v):,}원" if v > 0 else "—")
+    detail_disp["원/평"] = detail_disp["원_평_표시"]
     if "원_m2" in detail_disp.columns:
-        detail_disp["원/㎡"] = detail_disp["원_m2"].apply(lambda v: f"{v:,.0f}원" if v > 0 else "—")
+        detail_disp["원/㎡"] = detail_disp["원_m2"]
     if "면적_m2" in detail_disp.columns:
-        detail_disp["면적(㎡)"] = detail_disp["면적_m2"].apply(lambda v: f"{v:.3f}" if v else "—")
+        detail_disp["면적(㎡)"] = detail_disp["면적_m2"]
 
     # 연월 컬럼 합산
     if "year" in detail_disp.columns and "month" in detail_disp.columns:
@@ -457,8 +463,18 @@ else:
                               "금액(부가세제외)", "부가세(10%)", "합계(부가세포함)", "오기여부"]
                  if c in detail_disp.columns]
 
-    st.dataframe(detail_disp[show_cols], use_container_width=True, hide_index=True,
-                 height=min(400, max(200, len(detail_disp) * 36 + 40)))
+    st.dataframe(
+        detail_disp[show_cols], use_container_width=True, hide_index=True,
+        height=min(400, max(200, len(detail_disp) * 36 + 40)),
+        column_config={
+            "면적(㎡)": st.column_config.NumberColumn("면적(㎡)", format="%.3f"),
+            "원/평": st.column_config.NumberColumn("원/평", format="localized"),
+            "원/㎡": st.column_config.NumberColumn("원/㎡", format="localized"),
+            "금액(부가세제외)": st.column_config.NumberColumn("금액(부가세제외)", format="localized"),
+            "부가세(10%)": st.column_config.NumberColumn("부가세(10%)", format="localized"),
+            "합계(부가세포함)": st.column_config.NumberColumn("합계(부가세포함)", format="localized"),
+        },
+    )
 
     # 거래처별 합산 소계
     if not detail_df.empty and "거래처" in detail_df.columns and "금액_원" in detail_df.columns:
@@ -469,14 +485,18 @@ else:
             .sort_values(ascending=False)
             .reset_index()
         )
-        subtotal["금액"] = subtotal["금액_원"].apply(fmt_krw)
+        subtotal["금액"] = subtotal["금액_원"]
         if "원_m2" in detail_df.columns:
             avg_price = detail_df.groupby("거래처")["원_m2"].mean().round(0).astype(int)
-            subtotal["평균원/㎡"] = subtotal["거래처"].map(avg_price).apply(
-                lambda v: f"{v:,}" if pd.notna(v) else "—"
-            )
-        st.dataframe(subtotal[[c for c in ["거래처", "금액", "평균원/㎡"] if c in subtotal.columns]],
-                     use_container_width=True, hide_index=True)
+            subtotal["평균원/㎡"] = subtotal["거래처"].map(avg_price)
+        st.dataframe(
+            subtotal[[c for c in ["거래처", "금액", "평균원/㎡"] if c in subtotal.columns]],
+            use_container_width=True, hide_index=True,
+            column_config={
+                "금액": st.column_config.NumberColumn("금액", format="localized"),
+                "평균원/㎡": st.column_config.NumberColumn("평균원/㎡", format="localized"),
+            },
+        )
 
 st.markdown("---")
 st.caption("💡 **다음달 챙길 일** — 단가 10% 이상 변동 품목 확인, 재고 적정 수준 유지")

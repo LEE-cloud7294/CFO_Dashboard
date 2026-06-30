@@ -459,11 +459,12 @@ else:
     st.plotly_chart(fig2, use_container_width=True)
 
     recent = capex_hist.sort_values("전표일자", ascending=False).head(10)
-    recent["금액"] = recent["차변"].apply(fmt_krw)
+    recent["금액"] = recent["차변"]
     recent["구분"] = recent["계정코드"].map(code_label)
     st.dataframe(
         recent[["전표일자", "구분", "금액", "거래처", "적요"]].reset_index(drop=True),
         use_container_width=True, hide_index=True,
+        column_config={"금액": st.column_config.NumberColumn("금액", format="localized")},
     )
 
 st.markdown("---")
@@ -503,12 +504,6 @@ if debts_df.empty:
 else:
     display_cols = [c for c in ["은행명","대출종류","원금잔액","금리","만기일","다음상환일","월상환액","비고"] if c in debts_df.columns]
     display_df = debts_df[display_cols].copy()
-    if "원금잔액" in display_df.columns:
-        display_df["원금잔액"] = display_df["원금잔액"].apply(lambda v: fmt_krw(v) if pd.notna(v) and v > 0 else "-")
-    if "금리" in display_df.columns:
-        display_df["금리"] = display_df["금리"].apply(lambda v: f"{v:.2f}%" if pd.notna(v) and v > 0 else "-")
-    if "월상환액" in display_df.columns:
-        display_df["월상환액"] = display_df["월상환액"].apply(lambda v: fmt_krw(v) if pd.notna(v) and v > 0 else "-")
 
     def row_style(row):
         try:
@@ -521,7 +516,14 @@ else:
             pass
         return [""] * len(row)
 
-    st.dataframe(display_df.style.apply(row_style, axis=1), use_container_width=True, hide_index=True)
+    st.dataframe(
+        display_df.style.apply(row_style, axis=1), use_container_width=True, hide_index=True,
+        column_config={
+            "원금잔액": st.column_config.NumberColumn("원금잔액", format="localized"),
+            "금리": st.column_config.NumberColumn("금리", format="%.2f%%"),
+            "월상환액": st.column_config.NumberColumn("월상환액", format="localized"),
+        },
+    )
     col_t1, col_t2 = st.columns(2)
     col_t1.metric("총 대출 잔액", fmt_krw(total_principal))
     col_t2.metric("월 이자·상환 합계", fmt_krw(total_monthly))

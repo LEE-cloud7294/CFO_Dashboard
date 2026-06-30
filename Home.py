@@ -447,10 +447,10 @@ with col_ar:
 
         top_ar = aging_df.sort_values("잔액", ascending=False).head(8).copy()
         top_ar["위험도"] = top_ar.apply(risk_badge, axis=1)
-        top_ar["잔액"] = top_ar["잔액"].apply(lambda v: f"{v/1e6:.1f}백만")
         st.dataframe(
             top_ar[["거래처", "잔액", "위험도"]],
             use_container_width=True, hide_index=True, height=300,
+            column_config={"잔액": st.column_config.NumberColumn("잔액", format="localized")},
         )
         st.caption(f"총 미수금: {conc['총잔액']/1e6:.0f}백만원 | 정밀 분석 → 매출채권관리 페이지")
     else:

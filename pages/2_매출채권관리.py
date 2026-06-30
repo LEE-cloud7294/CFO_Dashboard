@@ -160,8 +160,10 @@ else:
 if conc["상위5"]:
     top5_raw = pd.DataFrame(conc["상위5"])
     top5_raw["비중(%)"] = (top5_raw["잔액"] / conc["총잔액"] * 100).round(1)
-    top5_raw["잔액"] = top5_raw["잔액"].apply(fmt_krw)
-    st.dataframe(top5_raw, use_container_width=True, hide_index=True)
+    st.dataframe(
+        top5_raw, use_container_width=True, hide_index=True,
+        column_config={"잔액": st.column_config.NumberColumn("잔액", format="localized")},
+    )
 
 # ── 연령분석 도넛 ────────────────────────────────────────────────────────
 st.markdown("---")
@@ -207,13 +209,6 @@ if not aging_df.empty:
         sort_df = sort_df.sort_values("경과일", ascending=False, na_position="last")
 
     display_aging = sort_df.copy()
-    for col in ["잔액", "정상(0-30)", "주의(31-60)", "경고(61-90)", "악성(91+)"]:
-        if col in display_aging.columns:
-            display_aging[col] = display_aging[col].apply(fmt_krw)
-    if "경과일" in display_aging.columns:
-        display_aging["경과일"] = display_aging["경과일"].apply(
-            lambda v: f"{int(v)}일" if pd.notna(v) else "—"
-        )
     if "마지막입금일" in display_aging.columns:
         display_aging["마지막입금일"] = display_aging["마지막입금일"].apply(
             lambda v: str(v) if pd.notna(v) else "—"
@@ -223,7 +218,14 @@ if not aging_df.empty:
 
     show_cols = [c for c in ["거래처", "잔액", "악성(91+)", "경과일", "마지막입금일", "정정전표",
                               "주의(31-60)", "경고(61-90)", "정상(0-30)"] if c in display_aging.columns]
-    st.dataframe(display_aging[show_cols], use_container_width=True, hide_index=True, height=400)
+    money_cols = ["잔액", "정상(0-30)", "주의(31-60)", "경고(61-90)", "악성(91+)"]
+    st.dataframe(
+        display_aging[show_cols], use_container_width=True, hide_index=True, height=400,
+        column_config={
+            **{c: st.column_config.NumberColumn(c, format="localized") for c in money_cols if c in show_cols},
+            "경과일": st.column_config.NumberColumn("경과일", format="%d일"),
+        },
+    )
 
 # ── 거래처 심층 분석 ─────────────────────────────────────────────────────
 st.markdown("---")
@@ -384,9 +386,10 @@ col_b1.metric("전체 미현금화 어음 잔액", fmt_krw(total_bills),
 if not bills_by_partner.empty:
     with col_b2:
         st.markdown("**거래처별 어음수취액 (미현금화 포함)**")
-        bills_display = bills_by_partner.copy()
-        bills_display["어음수취액"] = bills_display["어음수취액"].apply(fmt_krw)
-        st.dataframe(bills_display, use_container_width=True, hide_index=True)
+        st.dataframe(
+            bills_by_partner, use_container_width=True, hide_index=True,
+            column_config={"어음수취액": st.column_config.NumberColumn("어음수취액", format="localized")},
+        )
     st.caption(f"💡 전체 어음 잔액 {fmt_krw(total_bills)} — 어음이 현금화되면 보통예금(103) 입금, 부도 시 대손처리 필요")
 else:
     col_b2.info("어음 거래 없음")
@@ -400,10 +403,14 @@ if 악성_df.empty:
     st.success("91일 초과 미수금 없음")
 else:
     display = 악성_df[["거래처", "잔액", "악성(91+)"]].copy()
-    display["잔액"] = display["잔액"].apply(fmt_krw)
-    display["악성(91+)"] = display["악성(91+)"].apply(fmt_krw)
     display.columns = ["거래처", "전체 잔액", "91일+ 미수금"]
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(
+        display, use_container_width=True, hide_index=True,
+        column_config={
+            "전체 잔액": st.column_config.NumberColumn("전체 잔액", format="localized"),
+            "91일+ 미수금": st.column_config.NumberColumn("91일+ 미수금", format="localized"),
+        },
+    )
     st.warning(
         "💡 **대손상각 처리 방법**: 위하고에서 `차변: 대손상각비 / 대변: 외상매출금(108)` 분개 입력 후 "
         "데이터허브에서 해당 월 재업로드하면 자동 반영됩니다."
@@ -421,17 +428,19 @@ if "경과일" in filtered.columns:
     filtered = filtered.sort_values("경과일", ascending=False, na_position="last")
 
 display_aging2 = filtered.copy()
-for col in ["잔액", "정상(0-30)", "주의(31-60)", "경고(61-90)", "악성(91+)"]:
-    if col in display_aging2.columns:
-        display_aging2[col] = display_aging2[col].apply(fmt_krw)
-if "경과일" in display_aging2.columns:
-    display_aging2["경과일"] = display_aging2["경과일"].apply(lambda v: f"{int(v)}일" if pd.notna(v) else "—")
 if "마지막입금일" in display_aging2.columns:
     display_aging2["마지막입금일"] = display_aging2["마지막입금일"].apply(lambda v: str(v) if pd.notna(v) else "—")
 if "정정전표" in display_aging2.columns:
     display_aging2["정정전표"] = display_aging2["정정전표"].apply(lambda v: "⚠️" if v else "")
 
-st.dataframe(display_aging2, use_container_width=True, hide_index=True, height=400)
+money_cols2 = ["잔액", "정상(0-30)", "주의(31-60)", "경고(61-90)", "악성(91+)"]
+st.dataframe(
+    display_aging2, use_container_width=True, hide_index=True, height=400,
+    column_config={
+        **{c: st.column_config.NumberColumn(c, format="localized") for c in money_cols2 if c in display_aging2.columns},
+        "경과일": st.column_config.NumberColumn("경과일", format="%d일"),
+    },
+)
 
 # ── 다음 달 채권 관리 포인트 ────────────────────────────────────────────
 st.markdown("---")

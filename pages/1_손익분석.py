@@ -210,40 +210,54 @@ st.markdown("---")
 st.subheader("대분류별 상세")
 
 display_df = bucket_summary[["대분류", "금액", "비율(%)"]].copy()
-display_df["금액"] = display_df["금액"].apply(fmt_krw)
-st.dataframe(display_df, use_container_width=True, hide_index=True)
+st.dataframe(
+    display_df, use_container_width=True, hide_index=True,
+    column_config={"금액": st.column_config.NumberColumn("금액", format="localized")},
+)
 
 # ── Drill-down ───────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("상세 Drill-down")
+RAW_MATERIAL_CODE = {"원재료매입": "153", "부재료매입": "162"}
 all_buckets = [b for b in bucket_summary["대분류"].tolist()
-               if b not in ("원재료매입", "부재료매입", "감가상각(월배분)")]
+               if b not in ("감가상각(월배분)", "감가상각(연간)")]
 selected_bucket = st.selectbox("대분류 선택", ["선택하세요"] + all_buckets)
 
 if selected_bucket != "선택하세요":
-    # "일회성손익" bucket은 이미 cost_df에서 제외됨 — cost_df_display 기준
     target_bucket = selected_bucket
-    detail = cost_df_display[cost_df_display["대분류"] == target_bucket].copy()
+    if target_bucket in RAW_MATERIAL_CODE:
+        # 원재료·부재료는 cost_df에서 제외된 별도 계정(153/162) — 분개장에서 직접 거래처별 집계
+        detail = df[df["계정코드"].astype(str) == RAW_MATERIAL_CODE[target_bucket]].copy()
+        group_col = "거래처"
+    else:
+        # "일회성손익" bucket은 이미 cost_df에서 제외됨 — cost_df_display 기준
+        detail = cost_df_display[cost_df_display["대분류"] == target_bucket].copy()
+        group_col = "계정과목"
 
     if detail.empty:
         st.info(f"'{selected_bucket}' 상세 전표 없음")
     else:
-        by_account = (
-            detail.groupby("계정과목")["차변"]
+        by_group = (
+            detail.groupby(group_col)["차변"]
             .sum().reset_index()
             .rename(columns={"차변": "금액"})
             .sort_values("금액", ascending=False)
         )
         col_a, col_b = st.columns([1, 2])
         with col_a:
-            st.markdown(f"**{selected_bucket} — 계정별 집계**")
-            by_account["금액"] = by_account["금액"].apply(fmt_krw)
-            st.dataframe(by_account, use_container_width=True, hide_index=True)
+            label = "거래처별" if group_col == "거래처" else "계정별"
+            st.markdown(f"**{selected_bucket} — {label} 집계**")
+            st.dataframe(
+                by_group, use_container_width=True, hide_index=True,
+                column_config={"금액": st.column_config.NumberColumn("금액", format="localized")},
+            )
         with col_b:
             st.markdown(f"**{selected_bucket} — 전표 상세**")
             show = detail[["전표일자","계정과목","거래처","적요","차변"]].sort_values("차변", ascending=False).head(30)
-            show["차변"] = show["차변"].apply(lambda v: f"{v:,.0f}원")
-            st.dataframe(show, use_container_width=True, hide_index=True)
+            st.dataframe(
+                show, use_container_width=True, hide_index=True,
+                column_config={"차변": st.column_config.NumberColumn("차변", format="localized")},
+            )
 
 # ── 공장 vs 본사 ──────────────────────────────────────────────────────────
 st.markdown("---")
