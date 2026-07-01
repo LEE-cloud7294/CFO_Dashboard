@@ -151,7 +151,7 @@ else:
     if "원_m2" in disp.columns:
         disp["원/㎡"] = disp["원_m2"]
 
-    show_cols = [c for c in ["거래처", "원산지", "두께", "규격자", "일자", "금액", "원/평", "원/㎡", "오기여부"] if c in disp.columns]
+    show_cols = [c for c in ["거래처", "원산지", "제품", "두께", "규격자", "일자", "금액", "원/평", "원/㎡", "오기여부"] if c in disp.columns]
     st.dataframe(
         disp[show_cols].sort_values(["두께", "거래처"] if "두께" in disp.columns else []),
         use_container_width=True, hide_index=True,
@@ -230,8 +230,15 @@ if not all_price_df.empty and "원_m2" in all_price_df.columns:
     ) if "year" in all_price_df.columns else []
 
     if trend_years:
-        tcol1, tcol2 = st.columns([1, 2])
+        tcol1, tcol2, tcol3 = st.columns(3)
         sel_trend_year = tcol1.selectbox("연도", trend_years, index=0, key="trend_year")
+
+        # 제품(색상) 필터 — 선택된 연도 기준으로 목록 구성
+        year_df_for_filter = all_price_df[all_price_df["year"].astype(str) == sel_trend_year]
+        product_vals = sorted(
+            year_df_for_filter["제품"].dropna().unique().tolist()
+        ) if "제품" in all_price_df.columns else []
+        sel_trend_product = tcol2.selectbox("제품(색상)", ["전체"] + product_vals, index=0, key="trend_product")
 
         # 두께 필터
         thick_vals = sorted([
@@ -239,7 +246,11 @@ if not all_price_df.empty and "원_m2" in all_price_df.columns:
             if str(v).replace(".0", "").isdigit()
         ]) if "두께" in all_price_df.columns else []
         thick_filter_opts = ["전체"] + [f"{t}mm" for t in thick_vals]
-        sel_trend_thick = tcol2.selectbox("두께 필터", thick_filter_opts, index=0, key="trend_thick")
+        sel_trend_thick = tcol3.selectbox("두께", thick_filter_opts, index=0, key="trend_thick")
+
+        # 색상 미선택 시 경고
+        if sel_trend_product == "전체":
+            st.warning("⚠️ 제품(색상)을 선택하지 않으면 색상별 단가 차이가 평균에 혼합됩니다. 정확한 추이는 색상을 지정해 주세요.")
 
         # 해당 연도 데이터 필터 + 원_평 보정
         trend_df = all_price_df[
@@ -247,6 +258,10 @@ if not all_price_df.empty and "원_m2" in all_price_df.columns:
         ].copy()
         trend_df["원_평_표시"] = trend_df.apply(_calc_pyeong, axis=1)
         trend_df = trend_df[trend_df["원_평_표시"] > 0]
+
+        # 제품(색상) 필터 적용
+        if sel_trend_product != "전체" and "제품" in trend_df.columns:
+            trend_df = trend_df[trend_df["제품"] == sel_trend_product]
 
         if sel_trend_thick != "전체":
             t_val = int(sel_trend_thick.replace("mm", ""))
@@ -291,10 +306,16 @@ if not all_price_df.empty and "원_m2" in all_price_df.columns:
                         textfont=dict(size=10),
                     ))
 
-                thick_label = f" ({sel_trend_thick})" if sel_trend_thick != "전체" else " (전 두께 평균)"
+                filter_parts = []
+                if sel_trend_product != "전체":
+                    filter_parts.append(sel_trend_product)
+                if sel_trend_thick != "전체":
+                    filter_parts.append(sel_trend_thick)
+                filter_label = f" ({' · '.join(filter_parts)})" if filter_parts else " (전 색상 · 전 두께 혼합평균)"
+
                 fig_trend.update_layout(
                     title=dict(
-                        text=f"{sel_trend_year}년 월별 원/평 단가 추이{thick_label}",
+                        text=f"{sel_trend_year}년 월별 원/평 단가 추이{filter_label}",
                         font=dict(size=14, color="white"),
                         x=0,
                     ),
@@ -458,7 +479,7 @@ else:
     if "year" in detail_disp.columns and "month" in detail_disp.columns:
         detail_disp["연월"] = detail_disp["year"].astype(str) + "-" + detail_disp["month"].astype(str).str.zfill(2)
 
-    show_cols = [c for c in ["연월", "일자", "거래처", "원산지", "두께", "규격자", "규격mm",
+    show_cols = [c for c in ["연월", "일자", "거래처", "원산지", "제품", "두께", "규격자", "규격mm",
                               "면적(㎡)", "원/평", "원/㎡",
                               "금액(부가세제외)", "부가세(10%)", "합계(부가세포함)", "오기여부"]
                  if c in detail_disp.columns]
