@@ -485,15 +485,21 @@ else:
             .sort_values(ascending=False)
             .reset_index()
         )
-        subtotal["금액"] = subtotal["금액_원"]
+        subtotal["금액(부가세제외)"] = subtotal["금액_원"].round(0)
+        if "합계_원" in detail_df.columns:
+            vat_sum = detail_df.groupby("거래처")["합계_원"].sum().round(0)
+            subtotal["세금포함(VAT10%)"] = subtotal["거래처"].map(vat_sum)
+        else:
+            subtotal["세금포함(VAT10%)"] = (subtotal["금액_원"] * 1.1).round(0)
         if "원_m2" in detail_df.columns:
             avg_price = detail_df.groupby("거래처")["원_m2"].mean().round(0).astype(int)
             subtotal["평균원/㎡"] = subtotal["거래처"].map(avg_price)
         st.dataframe(
-            subtotal[[c for c in ["거래처", "금액", "평균원/㎡"] if c in subtotal.columns]],
+            subtotal[[c for c in ["거래처", "금액(부가세제외)", "세금포함(VAT10%)", "평균원/㎡"] if c in subtotal.columns]],
             use_container_width=True, hide_index=True,
             column_config={
-                "금액": st.column_config.NumberColumn("금액", format="localized"),
+                "금액(부가세제외)": st.column_config.NumberColumn("금액(부가세제외)", format="localized"),
+                "세금포함(VAT10%)": st.column_config.NumberColumn("세금포함(VAT10%)", format="localized"),
                 "평균원/㎡": st.column_config.NumberColumn("평균원/㎡", format="localized"),
             },
         )
