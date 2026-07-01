@@ -319,7 +319,7 @@ if not all_price_df.empty and "원_m2" in all_price_df.columns:
                     pivot = monthly_avg.pivot(index="거래처", columns="월", values="원_평_표시")
                     cols_sorted = sorted(pivot.columns, key=lambda x: int(x.replace("월", "")))
                     pivot = pivot[cols_sorted]
-                    pivot_disp = pivot.applymap(lambda v: f"{int(v):,}원" if pd.notna(v) and v > 0 else "—")
+                    pivot_disp = pivot.map(lambda v: f"{int(v):,}원" if pd.notna(v) and v > 0 else "—")
                     st.dataframe(pivot_disp, use_container_width=True)
     else:
         st.info("단가 데이터 없음")
